@@ -1,16 +1,16 @@
 /**
  * CP-Code ID codec — TypeScript port of prototype/cp_code.py
  *
- * 7-character Base32 (35 bit) ID format:
+ * 9-character ID = `CP` + 7-character Base32 (35 bit) payload:
  *
- * - version: 4 bits — `0..15` (format version; currently 0)
+ * - version: 5 bits — `0..31` (format version; currently 0)
  * - timestamp: 20 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
- * - counter: 8 bits — ticks
- * - region ID: 3 bits — `0..8`
+ * - counter: 7 bits — per-tick sequence `0..127`
+ * - region ID: 3 bits — `0..7`
  *
- * Encoded as `CP` + 7 alphabet chars.
+ * Layout: [version:5][timestamp:20][counter:7][region:3]
  *
- * At 60sec resolution, 20-bit ticks cover ~4 years
+ * At 300s resolution, 20-bit ticks cover ~10 years
  *
  * Note: multi-bit packing uses BigInt. JavaScript's `<<` / `&` are 32-bit.
  */
@@ -22,7 +22,7 @@ export const CURRENT_VERSION = 0;
 export const TIME_EPOCH = 1_785_000_000;
 
 /** Tick length in seconds. */
-export const TIME_RESOLUTION = 60;
+export const TIME_RESOLUTION = 300;
 
 export type CPCode = {
 	version: number;
@@ -34,16 +34,23 @@ export type CPCode = {
 /** Custom alphabet (no M/N/O/W) for readable IDs. */
 export const ALPHABET = "0123456789ABCDEFGHIJKLPQRSTUVXYZ";
 
-export const VERSION_BITS = 4;
+export const VERSION_BITS = 5;
 export const TIMESTAMP_BITS = 20;
-export const COUNTER_BITS = 8;
+export const COUNTER_BITS = 7;
 export const REGION_ID_BITS = 3;
 
+export const PAYLOAD_BITS = VERSION_BITS + TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS;
+export const PAYLOAD_CHARS = 7; // 35 bits → 7 Base32 chars
+export const ID_PREFIX = "CP";
+export const ID_LENGTH = ID_PREFIX.length + PAYLOAD_CHARS; // 9
+
 const MAX_TICK = 2 ** TIMESTAMP_BITS;
+const MAX_COUNTER = 2 ** COUNTER_BITS;
 const MAX_TICK_DURATION_S = MAX_TICK * TIME_RESOLUTION;
 
 const VERSION_MASK = (1n << BigInt(VERSION_BITS)) - 1n;
 const TIMESTAMP_MASK = (1n << BigInt(TIMESTAMP_BITS)) - 1n;
+const COUNTER_MASK = (1n << BigInt(COUNTER_BITS)) - 1n;
 const REGION_MASK = (1n << BigInt(REGION_ID_BITS)) - 1n;
 
 export function timeRange(): { start: number; end: number; years: number } {
@@ -60,6 +67,12 @@ function assertVersion(version: number): void {
 	}
 	if (version !== CURRENT_VERSION) {
 		throw new Error(`unsupported version: ${version}`);
+	}
+}
+
+function assertCounter(counter: number): void {
+	if (!Number.isInteger(counter) || counter < 0 || counter >= MAX_COUNTER) {
+		throw new Error(`counter must be an integer between 0 and ${MAX_COUNTER - 1}`);
 	}
 }
 
@@ -84,19 +97,9 @@ export function alignTimestamp(timestamp: number): number {
 	return tickToTimestamp(timestampToTick(timestamp));
 }
 
-/** 46-bit payload as 6 big-endian bytes (Python int.to_bytes(6, "big")). */
-export function payloadToBytes(payload: bigint): Uint8Array {
-	const bytes = new Uint8Array(6);
-	let value = payload;
-	for (let i = 5; i >= 0; i--) {
-		bytes[i] = Number(value & 0xffn);
-		value >>= 8n;
-	}
-	return bytes;
-}
-
 export function encodeCpCode(cpCode: CPCode): string {
 	assertVersion(cpCode.version);
+	assertCounter(cpCode.counter);
 	assertRegionId(cpCode.region_id);
 
 	const offset = cpCode.timestamp - TIME_EPOCH;
@@ -112,28 +115,30 @@ export function encodeCpCode(cpCode: CPCode): string {
 		throw new Error("timestamp is outside the supported range");
 	}
 
-	// [version:4][timestamp:24][counter:8][region:4] = 40 bits
+	// [version:5][timestamp:20][counter:7][region:3] = 35 bits
 	let payload =
 		(BigInt(cpCode.version) << BigInt(TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS)) |
-		(BigInt(tsVal) << BigInt(REGION_ID_BITS + COUNTER_BITS)) |
-		(BigInt(counterVal) << BigInt(REGION_ID_BITS)) |
+		(BigInt(tsVal) << BigInt(COUNTER_BITS + REGION_ID_BITS)) |
+		(BigInt(cpCode.counter) << BigInt(REGION_ID_BITS)) |
 		BigInt(cpCode.region_id);
 
 	const chars: string[] = [];
-	for (let i = 0; i < 10; i++) {
+	for (let i = 0; i < PAYLOAD_CHARS; i++) {
 		chars.push(ALPHABET[Number(payload & 0x1fn)]!);
 		payload >>= 5n;
 	}
-	return "CP" + chars.reverse().join("");
+	return ID_PREFIX + chars.reverse().join("");
 }
 
 export function generateCpCode(
 	regionId = 0,
 	timestamp: number = Date.now() / 1000,
+	counter = 0,
 	version: number = CURRENT_VERSION,
 ): CPCode {
 	assertVersion(version);
 	assertRegionId(regionId);
+	assertCounter(counter);
 	if (!Number.isFinite(timestamp)) {
 		throw new Error("timestamp must be a finite number");
 	}
@@ -143,27 +148,28 @@ export function generateCpCode(
 	if (tick < 0 || tick >= MAX_TICK) {
 		throw new Error("timestamp is outside the supported range");
 	}
-	return { version, timestamp: aligned, region_id: regionId };
+	return { version, timestamp: aligned, counter, region_id: regionId };
 }
 
 export function makeCpCode(
 	regionId = 0,
 	timestamp: number = Date.now() / 1000,
+	counter = 0,
 	version: number = CURRENT_VERSION,
 ): string {
-	return encodeCpCode(generateCpCode(regionId, timestamp, version));
+	return encodeCpCode(generateCpCode(regionId, timestamp, counter, version));
 }
 
 export function parseCpCode(cpCodeData: string): CPCode {
-	if (typeof cpCodeData !== "string" || cpCodeData.length !== 12) {
-		throw new Error("ID must be exactly 12 characters");
+	if (typeof cpCodeData !== "string" || cpCodeData.length !== ID_LENGTH) {
+		throw new Error(`ID must be exactly ${ID_LENGTH} characters`);
 	}
-	if (!cpCodeData.startsWith("CP")) {
-		throw new Error("ID must use prefix 'CP'");
+	if (!cpCodeData.startsWith(ID_PREFIX)) {
+		throw new Error(`ID must use prefix '${ID_PREFIX}'`);
 	}
 
 	let payload = 0n;
-	for (const char of cpCodeData.slice(2).toUpperCase()) {
+	for (const char of cpCodeData.slice(ID_PREFIX.length).toUpperCase()) {
 		const digit = ALPHABET.indexOf(char);
 		if (digit < 0) {
 			throw new Error(`invalid Base32 character: '${char}'`);
@@ -171,17 +177,21 @@ export function parseCpCode(cpCodeData: string): CPCode {
 		payload = (payload << 5n) | BigInt(digit);
 	}
 
-	// [version:4][timestamp:24][counter:24][region:4]
+	// [version:5][timestamp:20][counter:7][region:3]
 	const version = Number(
-		(payload >> BigInt(TIMESTAMP_BITS + REGION_ID_BITS)) & VERSION_MASK,
+		(payload >> BigInt(TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS)) & VERSION_MASK,
 	);
-	const tsVal = Number((payload >> BigInt(REGION_ID_BITS)) & TIMESTAMP_MASK);
+	const tsVal = Number(
+		(payload >> BigInt(COUNTER_BITS + REGION_ID_BITS)) & TIMESTAMP_MASK,
+	);
+	const counter = Number((payload >> BigInt(REGION_ID_BITS)) & COUNTER_MASK);
 	const regionId = Number(payload & REGION_MASK);
 
 	assertVersion(version);
 	return {
 		version,
 		timestamp: tickToTimestamp(tsVal),
+		counter,
 		region_id: regionId,
 	};
 }

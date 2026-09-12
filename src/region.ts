@@ -4,65 +4,67 @@
  * region_id identifies which MonoClock DO owns the timestamp watermark —
  * i.e. the DO's location region, not the Worker request colo.
  *
- * Cloudflare DO location hints that actually host objects today:
- *   wnam, enam, weur, eeur, apac, apac-ne, apac-se, oc
- * (sam / afr / me are valid hint names but currently fall back elsewhere.)
+ * CP-Code packs 8 logical regions into 3 bits. Hint names match Cloudflare
+ * DurableObjectLocationHint values (sam/afr are valid hints; CF may place
+ * the DO in a nearby jurisdiction if they do not host there yet).
  *
  * Stability: existing region IDs must never change; new regions append.
- * Fits in 6-bit CP-Code region_id (0..63).
+ * Fits in 3-bit CP-Code region_id (0..7).
  */
 
-/** DO location hints that spawn Durable Objects (per CF docs). */
-export type DoLocationHint =
+/** Logical regions encoded in CP-Code region_id (and used as DO clock shards). */
+export type RegionHint =
 	| "wnam"
 	| "enam"
 	| "weur"
 	| "eeur"
 	| "apac"
+	| "oc"
+	| "sam"
+	| "afr";
+
+/** Hints accepted by get(..., { locationHint }) but not packed as their own region_id. */
+export type LocationHint =
+	| RegionHint
 	| "apac-ne"
 	| "apac-se"
-	| "oc";
-
-/** All hint strings accepted by get(..., { locationHint }). */
-export type LocationHint =
-	| DoLocationHint
-	| "sam"
-	| "afr"
 	| "me";
+
+/** @deprecated alias — prefer RegionHint */
+export type DoLocationHint = RegionHint;
 
 /**
  * Append-only hint → region_id.
- * 0 is reserved for legacy/unmapped decode only — new mints always use 1..8.
+ * Eight logical regions pack into 3 bits (0..7).
  */
 export const REGION_ID = {
-	wnam: 1, // Western North America
-	enam: 2, // Eastern North America
-	weur: 3, // Western Europe
-	eeur: 4, // Eastern Europe
-	apac: 5, // Asia-Pacific (general)
-	"apac-ne": 6, // Northeast Asia-Pacific
-	"apac-se": 7, // Southeast Asia-Pacific
-	oc: 8, // Oceania
-} as const satisfies Record<DoLocationHint, number>;
+	wnam: 0, // Western North America
+	enam: 1, // Eastern North America
+	weur: 2, // Western Europe
+	eeur: 3, // Eastern Europe
+	apac: 4, // Asia-Pacific
+	oc: 5, // Oceania
+	sam: 6, // South America
+	afr: 7, // Africa
+} as const satisfies Record<RegionHint, number>;
 
 /**
  * Fallback when colo/geo cannot be resolved.
  * Always a real hosting region so MonoClock gets a stable name + locationHint
  * (never an unhinted `clock:0` shard).
  */
-export const DEFAULT_LOCATION_HINT: DoLocationHint = "weur";
-
-export type RegionHint = keyof typeof REGION_ID;
+export const DEFAULT_LOCATION_HINT: RegionHint = "weur";
 
 export const ID_TO_HINT: ReadonlyMap<number, RegionHint> = new Map(
 	(Object.entries(REGION_ID) as [RegionHint, number][]).map(([hint, id]) => [id, hint]),
 );
 
 export const REGION_COUNT = Object.keys(REGION_ID).length;
-export const UNKNOWN_REGION_ID = 0;
+/** Sentinel for unresolved hints — not a valid packed region_id. */
+export const UNKNOWN_REGION_ID = -1;
 
-/** Known DO-host colos → location hint (best-effort). */
-export const COLO_TO_HINT: Readonly<Record<string, DoLocationHint>> = Object.freeze({
+/** Known colos → packed region hint (best-effort). */
+export const COLO_TO_HINT: Readonly<Record<string, RegionHint>> = Object.freeze({
 	// wnam
 	DEN: "wnam",
 	LAX: "wnam",
@@ -90,28 +92,29 @@ export const COLO_TO_HINT: Readonly<Record<string, DoLocationHint>> = Object.fre
 	PRG: "eeur",
 	VIE: "eeur",
 	WAW: "eeur",
-	// apac
+	// apac (incl. former apac-ne / apac-se colos)
 	HKG: "apac",
-	// apac-ne
-	ICN: "apac-ne",
-	KIX: "apac-ne",
-	NRT: "apac-ne",
-	// apac-se
-	SIN: "apac-se",
+	ICN: "apac",
+	KIX: "apac",
+	NRT: "apac",
+	SIN: "apac",
 	// oc
 	AKL: "oc",
 	BNE: "oc",
 	MEL: "oc",
 	SYD: "oc",
+	// sam
+	GRU: "sam",
+	SCL: "sam",
+	// afr
+	JNB: "afr",
+	CPT: "afr",
 });
 
-/**
- * Hints that do not host DOs → nearest hosting hint (CF docs).
- * sam → enam; afr/me → weur (reasonable nearby fallbacks).
- */
-const NON_HOST_FALLBACK: Record<"sam" | "afr" | "me", DoLocationHint> = {
-	sam: "enam",
-	afr: "weur",
+/** Non-packed CF hints → nearest packed region. */
+const HINT_FALLBACK: Record<"apac-ne" | "apac-se" | "me", RegionHint> = {
+	"apac-ne": "apac",
+	"apac-se": "apac",
 	me: "weur",
 };
 
@@ -120,7 +123,7 @@ export function isRegionHint(value: string): value is RegionHint {
 }
 
 export function idToHint(regionId: number): RegionHint | null {
-	if (!Number.isInteger(regionId) || regionId === UNKNOWN_REGION_ID) return null;
+	if (!Number.isInteger(regionId) || regionId < 0) return null;
 	return ID_TO_HINT.get(regionId) ?? null;
 }
 
@@ -129,18 +132,18 @@ export function hintToId(hint: string | null | undefined): number {
 	return REGION_ID[hint];
 }
 
-/** Normalize any location hint to one that actually hosts DOs. */
-export function hostingHint(hint: LocationHint | string | null | undefined): DoLocationHint | null {
+/** Normalize any CF location hint to a packed RegionHint. */
+export function hostingHint(hint: LocationHint | string | null | undefined): RegionHint | null {
 	if (!hint) return null;
 	if (isRegionHint(hint)) return hint;
-	if (hint === "sam" || hint === "afr" || hint === "me") {
-		return NON_HOST_FALLBACK[hint];
+	if (hint === "apac-ne" || hint === "apac-se" || hint === "me") {
+		return HINT_FALLBACK[hint];
 	}
 	return null;
 }
 
-/** Map a cf.colo code to a DO hosting hint, if known. */
-export function hintFromColo(colo: string | null | undefined): DoLocationHint | null {
+/** Map a cf.colo code to a packed region hint, if known. */
+export function hintFromColo(colo: string | null | undefined): RegionHint | null {
 	if (!colo) return null;
 	const code = colo.trim().toUpperCase();
 	return COLO_TO_HINT[code] ?? null;
@@ -150,7 +153,7 @@ export function hintFromColo(colo: string | null | undefined): DoLocationHint | 
  * Best-effort hint from request.cf geography when colo isn't a known DO host.
  * Uses continent / country — coarse but better than unknown.
  */
-export function hintFromCfGeo(cf: IncomingRequestCfProperties | undefined): DoLocationHint | null {
+export function hintFromCfGeo(cf: IncomingRequestCfProperties | undefined): RegionHint | null {
 	if (!cf) return null;
 
 	const continent = cf.continent;
@@ -172,22 +175,14 @@ export function hintFromCfGeo(cf: IncomingRequestCfProperties | undefined): DoLo
 			if (!Number.isNaN(longitude) && longitude > 15) return "eeur";
 			return "weur";
 		}
-		case "AS": {
-			const ne = new Set(["JP", "KR", "TW", "CN", "HK", "MO", "MN", "KP"]);
-			const se = new Set([
-				"SG", "MY", "ID", "TH", "VN", "PH", "KH", "LA", "MM", "BN",
-				"IN", "BD", "PK", "LK", "NP", "BT",
-			]);
-			if (country && ne.has(country)) return "apac-ne";
-			if (country && se.has(country)) return "apac-se";
+		case "AS":
 			return "apac";
-		}
 		case "OC":
 			return "oc";
 		case "SA":
-			return hostingHint("sam");
+			return "sam";
 		case "AF":
-			return hostingHint("afr");
+			return "afr";
 		default:
 			return null;
 	}
@@ -196,7 +191,7 @@ export function hintFromCfGeo(cf: IncomingRequestCfProperties | undefined): DoLo
 export type ResolvedRegion = {
 	region_id: number;
 	/** DO location hint used for placement + clock shard (always set). */
-	location_hint: DoLocationHint;
+	location_hint: RegionHint;
 	/** True when we fell back to DEFAULT_LOCATION_HINT. */
 	used_default: boolean;
 	/** Request Worker colo, if present. */

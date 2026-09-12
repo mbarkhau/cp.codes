@@ -14,14 +14,14 @@ import datetime as dt
 #
 # 9-character ID = `CP` + 7-character Base32 (35 bit) payload:
 #
-# - version: 5 bits — `0..15` (format version; currently 0)
-# - timestamp: 18 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
-# - counter: 8 bits — per-tick sequence `0..255`
+# - version: 5 bits — `0..31` (format version; currently 0)
+# - timestamp: 20 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
+# - counter: 7 bits — per-tick sequence `0..127`
 # - region ID: 3 bits — `0..7`
 #
-# Layout: [version:4][timestamp:20][counter:8][region:3]
+# Layout: [version:5][timestamp:20][counter:7][region:3]
 #
-# At 300s resolution, 20-bit ticks cover ~?? years
+# At 300s resolution, 20-bit ticks cover ~10 years
 
 
 class CPCode(typ.NamedTuple):
@@ -32,9 +32,9 @@ class CPCode(typ.NamedTuple):
 
 
 ALPHABET = "0123456789ABCDEFGHIJKLPQRSTUVXYZ"
-VERSION_BITS = 4
+VERSION_BITS = 5
 TIMESTAMP_BITS = 20
-COUNTER_BITS = 8
+COUNTER_BITS = 7
 REGION_ID_BITS = 3
 
 PAYLOAD_BITS = VERSION_BITS + TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS
@@ -44,7 +44,7 @@ ID_LENGTH = len(ID_PREFIX) + PAYLOAD_CHARS  # 9
 
 CURRENT_VERSION = 0
 TIME_EPOCH = 1_785_000_000
-TIME_RESOLUTION = 60
+TIME_RESOLUTION = 300
 MAX_TICK = 1 << TIMESTAMP_BITS
 MAX_COUNTER = 1 << COUNTER_BITS
 
@@ -114,7 +114,7 @@ def encode_cp_code(cp_code: CPCode) -> str:
     if not 0 <= ts_val < MAX_TICK:
         raise ValueError("timestamp is outside the supported range")
 
-    # [version:4][timestamp:20][counter:8][region:3] = 35 bits
+    # [version:5][timestamp:20][counter:7][region:3] = 35 bits
     payload = (
         (cp_code.version << (TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS))
         | (ts_val << (COUNTER_BITS + REGION_ID_BITS))
@@ -182,7 +182,7 @@ def parse_cp_code(cp_code_data: str) -> CPCode:
             raise ValueError(f"invalid Base32 character: {char!r}") from None
         payload = (payload << 5) | digit
 
-    # [version:4][timestamp:20][counter:8][region:3]
+    # [version:5][timestamp:20][counter:7][region:3]
     version = (payload >> (TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS)) & (
         (1 << VERSION_BITS) - 1
     )

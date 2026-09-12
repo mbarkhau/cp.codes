@@ -1,0 +1,17 @@
+{
+	"name": "cp-codes",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"cf-typegen": "wrangler types",
+		"check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.2",
+		"wrangler": "^4.129.0"
+	}
+}

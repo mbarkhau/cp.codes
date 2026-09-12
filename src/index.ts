@@ -10,7 +10,7 @@
  *   GET  /health   health
  *   GET  /debug    request-level debug dump
  *   GET  /new      mint a new CP-Code (region_id = DO location hint)
- *   GET  /:id      parse/validate a CP-Code (e.g. /CP0000000003)
+ *   GET  /:id      parse/validate a CP-Code (e.g. /CP0000003)
  */
 
 import * as cpCode from "./cp_code";
@@ -32,6 +32,7 @@ function codeResponse(id: string, parts: cpCode.CPCode): Response {
 		id,
 		version: parts.version,
 		timestamp: parts.timestamp,
+		counter: parts.counter,
 		region_id: parts.region_id,
 		region: region.idToHint(parts.region_id),
 		url: `https://cp.codes/${id}`,
@@ -152,12 +153,16 @@ export default {
 			return json(debugPayload(request, env, ctx, url, path));
 		}
 
-		// Mint: DO-region mono clock → timestamp; cp_code encodes (region_id, ts)
+		// Mint: DO-region mono clock → (timestamp, counter); cp_code encodes both
 		if (path === "/new") {
 			try {
 				const resolved = region.regionFromRequest(request);
-				const timestamp = await monoClock(env, resolved).next(cpCode.TIME_RESOLUTION);
-				const parts = cpCode.generateCpCode(resolved.region_id, timestamp);
+				const maxCounter = 1 << cpCode.COUNTER_BITS;
+				const { timestamp, counter } = await monoClock(env, resolved).next(
+					cpCode.TIME_RESOLUTION,
+					maxCounter,
+				);
+				const parts = cpCode.generateCpCode(resolved.region_id, timestamp, counter);
 				const id = cpCode.encodeCpCode(parts);
 				return codeResponse(id, parts);
 			} catch (err) {
@@ -166,9 +171,9 @@ export default {
 			}
 		}
 
-		// Validate / decode an existing code: /CP..........
+		// Validate / decode an existing code: /CP....... (9 chars total)
 		const maybeId = path.slice(1);
-		if (/^CP[0-9A-Za-z]{10}$/.test(maybeId)) {
+		if (/^CP[0-9A-Za-z]{7}$/.test(maybeId)) {
 			try {
 				const parts = cpCode.parseCpCode(maybeId.toUpperCase());
 				return codeResponse(maybeId.toUpperCase(), parts);
