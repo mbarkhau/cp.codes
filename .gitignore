@@ -1,2 +1,19 @@
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
+# Node / Workers
+node_modules/
+.wrangler/
+.dev.vars
+.mf/
+dist/
+*.log
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example

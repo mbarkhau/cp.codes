@@ -13,121 +13,123 @@ from datetime import datetime, timezone
 
 # ID Format layout:
 #
-# 10-character Base32 (50 bit) ID format:
+# 7-character Base32 (35 bit) ID format:
 #
-# - epoch: 8 bits — `0..255`
-# - timestamp: 30 bits
-# - region ID 8 bits — `0..255`
-# - checksum: 4 bits — detects random corruption with probability >90%
+# - version: 4 bits — `0..15` (format version; currently 0)
+# - timestamp: 20 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
+# - counter: 8 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
+# - region ID: 3 bits — `0..8`
+#
+# At 60s resolution, 20-bit ticks cover ~4 years
 
 
 class CPCode(typ.NamedTuple):
-    epoch: int
-    timestamp: float
+    version: int
+    timestamp: int
+    counter: int
     region_id: int
 
 
 ALPHABET = "0123456789ABCDEFGHIJKLPQRSTUVXYZ"
-EPOCH_BITS = 8
-TIMESTAMP_BITS = 30
-REGION_ID_BITS = 8
-CHECKSUM_BITS = 4
+VERSION_BITS = 4
+TIMESTAMP_BITS = 20
+REGION_ID_BITS = 3
+COUNTER_BITS = 8
 
+CURRENT_VERSION = 0
+TIME_EPOCH = 1_785_000_000
+TIME_RESOLUTION = 60
+MAX_TICK = 1 << TIMESTAMP_BITS
 
-class Epoch(typ.NamedTuple):
-    eid: int
-    start: float
-    resolution: int | float
-
-
-# We can have new epochs overlap with previous, and still
-# maintain chronological sort order, so long as we're sure
-# that all code was changed (and therefore no ids were issued)
-# before the start of the new epoch
-EPOCHS = {0: Epoch(eid=0, start=1_785_000_000, resolution=0.1)}
-
-EPOCHS[1] = Epoch(
-    eid=1,
-    start=int(EPOCHS[0].start + 2**TIMESTAMP_BITS * EPOCHS[0].resolution),
-    resolution=0.1,
-)
-
-EPOCHS[2] = Epoch(
-    eid=2,
-    start=int(EPOCHS[1].start + 2**TIMESTAMP_BITS * EPOCHS[1].resolution),
-    resolution=0.1,
-)
-
-_last_timestamp = 0
+_last_timestamp = 0.0
 _last_timestamp_lock = threading.Lock()
 
 
-def _get_epoch(epoch_id: int) -> Epoch:
-    try:
-        return EPOCHS[epoch_id]
-    except KeyError:
-        raise ValueError(f"unknown epoch: {epoch_id}") from None
+def timestamp_to_tick(timestamp: float) -> int:
+    return round((timestamp - TIME_EPOCH) / TIME_RESOLUTION)
 
 
-def _epoch_for_timestamp(timestamp: float) -> Epoch:
-    for epoch_id, epoch in sorted(EPOCHS.items(), reverse=True):
-        if epoch.start <= timestamp < epoch.start + (1 << TIMESTAMP_BITS) * epoch.resolution:
-            return epoch
+def tick_to_timestamp(tick: int) -> float:
+    return TIME_EPOCH + tick * TIME_RESOLUTION
 
-    raise ValueError("timestamp is outside the supported epoch ranges")
+
+def align_timestamp(timestamp: float) -> float:
+    return tick_to_timestamp(timestamp_to_tick(timestamp))
+
+
+def next_timestamp(last: float = 0.0, now: float | None = None) -> float:
+    if now is None:
+        now = time.time()
+    now_tick = int((now - TIME_EPOCH) / TIME_RESOLUTION)
+    if last <= 0:
+        tick = now_tick
+    else:
+        last_tick = timestamp_to_tick(last)
+        tick = max(now_tick, last_tick + 1)
+    if not 0 <= tick < MAX_TICK:
+        raise ValueError("timestamp is outside the supported range")
+    return tick_to_timestamp(tick)
 
 
 def encode_cp_code(cp_code: CPCode) -> str:
-    epoch = _get_epoch(cp_code.epoch)
-    offset = cp_code.timestamp - epoch.start
-    if offset < 0:
-        raise ValueError("timestamp is outside the selected epoch or is not aligned")
-
-    # Use rounding so float resolutions like 0.1 survive binary float noise.
-    ts_val = round(offset / epoch.resolution)
-    if abs(offset - ts_val * epoch.resolution) > 1e-6:
-        raise ValueError("timestamp is outside the selected epoch or is not aligned")
-    if not 0 <= ts_val < (1 << TIMESTAMP_BITS):
-        raise ValueError("timestamp is outside the supported range")
+    if not 0 <= cp_code.version < (1 << VERSION_BITS):
+        raise ValueError(f"version must be between 0 and {(1 << VERSION_BITS) - 1}")
+    if cp_code.version != CURRENT_VERSION:
+        raise ValueError(f"unsupported version: {cp_code.version}")
     if not 0 <= cp_code.region_id < (1 << REGION_ID_BITS):
-        raise ValueError("region_id must be between 0 and 255")
+        raise ValueError(f"region_id must be between 0 and {(1 << REGION_ID_BITS) - 1}")
 
-    # [epoch:8][timestamp:30][region:8] + [checksum:4] = 50 bits (10 Base32 chars)
+    offset = cp_code.timestamp - TIME_EPOCH
+    if offset < 0:
+        raise ValueError("timestamp is before TIME_EPOCH")
+
+    ts_val = timestamp_to_tick(cp_code.timestamp)
+    if abs(offset - ts_val * TIME_RESOLUTION) > 1e-6:
+        raise ValueError("timestamp is not aligned to TIME_RESOLUTION")
+    if not 0 <= ts_val < MAX_TICK:
+        raise ValueError("timestamp is outside the supported range")
+
+    # [version:4][timestamp:36][region:6] + [checksum:4] = 50 bits
     payload = (
-        (cp_code.epoch << (TIMESTAMP_BITS + REGION_ID_BITS))
+        (cp_code.version << (TIMESTAMP_BITS + REGION_ID_BITS))
         | (ts_val << REGION_ID_BITS)
+        | (counter_val << COUNTER_BITS)
         | cp_code.region_id
     )
     payload_bytes = payload.to_bytes(6, "big")
-    checksum = zlib.crc32(payload_bytes) & ((1 << CHECKSUM_BITS) - 1)
-    value = (payload << CHECKSUM_BITS) | checksum
 
     chars = []
     for _ in range(10):
-        chars.append(ALPHABET[value & 0x1F])
-        value >>= 5
+        chars.append(ALPHABET[payload & 0x1F])
+        payload >>= 5
     return "CP" + "".join(reversed(chars))
 
 
-def generate_cp_code(region_id: int = 0) -> CPCode:
+def generate_cp_code(
+    region_id: int = 0,
+    timestamp: float | None = None,
+    version: int = CURRENT_VERSION,
+) -> CPCode:
     global _last_timestamp
 
+    if not 0 <= version < (1 << VERSION_BITS):
+        raise ValueError(f"version must be between 0 and {(1 << VERSION_BITS) - 1}")
+    if version != CURRENT_VERSION:
+        raise ValueError(f"unsupported version: {version}")
     if not 0 <= region_id < (1 << REGION_ID_BITS):
-        raise ValueError("region_id must be between 0 and 255")
+        raise ValueError(f"region_id must be between 0 and {(1 << REGION_ID_BITS) - 1}")
 
-    now = time.time()
-    epoch = _epoch_for_timestamp(now)
-    # Align down to epoch resolution (tick math avoids float modulo noise).
-    ts_val = int((now - epoch.start) / epoch.resolution)
-    timestamp = epoch.start + ts_val * epoch.resolution
+    if timestamp is None:
+        with _last_timestamp_lock:
+            ts = next_timestamp(_last_timestamp)
+            _last_timestamp = ts
+    else:
+        ts = align_timestamp(timestamp)
+        tick = timestamp_to_tick(ts)
+        if not 0 <= tick < MAX_TICK:
+            raise ValueError("timestamp is outside the supported range")
 
-    with _last_timestamp_lock:
-        if timestamp <= _last_timestamp:
-            ts_val = round((_last_timestamp - epoch.start) / epoch.resolution) + 1
-            timestamp = epoch.start + ts_val * epoch.resolution
-        _last_timestamp = timestamp
-
-    return CPCode(epoch.eid, timestamp, region_id)
+    return CPCode(version, ts, region_id)
 
 
 def make_cp_code(*args, **kwargs) -> str:
@@ -149,35 +151,30 @@ def parse_cp_code(cp_code_data: str) -> CPCode:
             raise ValueError(f"invalid Base32 character: {char!r}") from None
         value = (value << 5) | digit
 
-    checksum = value & ((1 << CHECKSUM_BITS) - 1)
     payload = value >> CHECKSUM_BITS
-    expected_checksum = zlib.crc32(payload.to_bytes(6, "big")) & ((1 << CHECKSUM_BITS) - 1)
 
-    if checksum != expected_checksum:
-        raise ValueError("invalid checksum")
-
-    # [epoch:8][timestamp:30][region:8]
-    epoch_id = (payload >> (TIMESTAMP_BITS + REGION_ID_BITS)) & ((1 << EPOCH_BITS) - 1)
+    # [version:4][timestamp:36][region:6]
+    version = (payload >> (TIMESTAMP_BITS + REGION_ID_BITS)) & ((1 << VERSION_BITS) - 1)
     ts_val = (payload >> REGION_ID_BITS) & ((1 << TIMESTAMP_BITS) - 1)
     region_id = payload & ((1 << REGION_ID_BITS) - 1)
 
-    epoch = _get_epoch(epoch_id)
-    timestamp = epoch.start + ts_val * epoch.resolution
-    return CPCode(epoch_id, timestamp, region_id)
+    if version != CURRENT_VERSION:
+        raise ValueError(f"unsupported version: {version}")
+
+    return CPCode(version, tick_to_timestamp(ts_val), region_id)
 
 
 def main() -> None:
-    for epoch in EPOCHS.values():
-        duration_s = (1 << TIMESTAMP_BITS) * epoch.resolution
-        end = int(epoch.start + duration_s)
-        start_date = datetime.fromtimestamp(epoch.start, tz=timezone.utc)
-        end_date = datetime.fromtimestamp(end, tz=timezone.utc)
-        print(
-            f"epoch {epoch.eid}: start={epoch.start} ({start_date.date()}) "
-            f"end={end} ({end_date.date()}) "
-            f"resolution={epoch.resolution}s "
-            f"duration={duration_s}s ({duration_s / 86400:.1f} days, {duration_s / 31557600:.2f} years)"
-        )
+    end = TIME_EPOCH + MAX_TICK * TIME_RESOLUTION
+    start_date = datetime.fromtimestamp(TIME_EPOCH, tz=timezone.utc)
+    end_date = datetime.fromtimestamp(end, tz=timezone.utc)
+    duration_s = MAX_TICK * TIME_RESOLUTION
+    print(
+        f"version {CURRENT_VERSION}: origin={TIME_EPOCH} ({start_date.date()}) "
+        f"end={int(end)} ({end_date.date()}) "
+        f"resolution={TIME_RESOLUTION}s "
+        f"duration={duration_s}s ({duration_s / 86400:.1f} days, {duration_s / 31557600:.2f} years)"
+    )
 
     prev_data = None
     for _ in range(4):
