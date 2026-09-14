@@ -1,4 +1,4 @@
-.PHONY: help dev start deploy check typegen
+.PHONY: help dev start deploy check typegen clear-db
 
 help:
 	@echo "Targets:"
@@ -7,6 +7,7 @@ help:
 	@echo "  make deploy   - deploy to Cloudflare"
 	@echo "  make check    - typecheck with tsc"
 	@echo "  make typegen  - regenerate worker types"
+	@echo "  make clear-db - clear all local Wrangler development data"
 
 dev start:
 	npm run dev
@@ -19,3 +20,6 @@ check:
 
 typegen:
 	npm run cf-typegen
+
+clear-db:
+	rm -rf .wrangler/state

@@ -4,28 +4,22 @@
  * region_id identifies which MonoClock DO owns the timestamp watermark —
  * i.e. the DO's location region, not the Worker request colo.
  *
- * CP-Code packs 8 logical regions into 3 bits. Hint names match Cloudflare
- * DurableObjectLocationHint values (sam/afr are valid hints; CF may place
- * the DO in a nearby jurisdiction if they do not host there yet).
+ * CP-Code packs four logical regions into 2 bits. The logical regions use
+ * Cloudflare Durable Object location-hint names and collapse nearby hints.
  *
- * Stability: existing region IDs must never change; new regions append.
- * Fits in 3-bit CP-Code region_id (0..7).
+ * Stability: existing region IDs must never change.
  */
 
 /** Logical regions encoded in CP-Code region_id (and used as DO clock shards). */
-export type RegionHint =
-	| "wnam"
-	| "enam"
-	| "weur"
-	| "eeur"
-	| "apac"
-	| "oc"
-	| "sam"
-	| "afr";
+export type RegionHint = "enam" | "weur" | "apac" | "sam";
 
-/** Hints accepted by get(..., { locationHint }) but not packed as their own region_id. */
+/** Cloudflare hints that can be normalized to one of the packed regions. */
 export type LocationHint =
 	| RegionHint
+	| "wnam"
+	| "eeur"
+	| "oc"
+	| "afr"
 	| "apac-ne"
 	| "apac-se"
 	| "me";
@@ -35,17 +29,13 @@ export type DoLocationHint = RegionHint;
 
 /**
  * Append-only hint → region_id.
- * Eight logical regions pack into 3 bits (0..7).
+ * Four logical regions pack into 2 bits (0..3).
  */
 export const REGION_ID = {
-	wnam: 0, // Western North America
-	enam: 1, // Eastern North America
-	weur: 2, // Western Europe
-	eeur: 3, // Eastern Europe
-	apac: 4, // Asia-Pacific
-	oc: 5, // Oceania
-	sam: 6, // South America
-	afr: 7, // Africa
+	enam: 0, // North America
+	weur: 1, // Europe, Middle East, and Africa
+	apac: 2, // Asia-Pacific and Oceania
+	sam: 3, // South America
 } as const satisfies Record<RegionHint, number>;
 
 /**
@@ -65,19 +55,18 @@ export const UNKNOWN_REGION_ID = -1;
 
 /** Known colos → packed region hint (best-effort). */
 export const COLO_TO_HINT: Readonly<Record<string, RegionHint>> = Object.freeze({
-	// wnam
-	DEN: "wnam",
-	LAX: "wnam",
-	SEA: "wnam",
-	SJC: "wnam",
-	// enam
+	// North America
+	DEN: "enam",
+	LAX: "enam",
+	SEA: "enam",
+	SJC: "enam",
 	ATL: "enam",
 	DFW: "enam",
 	EWR: "enam",
 	IAD: "enam",
 	MIA: "enam",
 	ORD: "enam",
-	// weur
+	// Europe
 	AMS: "weur",
 	CDG: "weur",
 	FRA: "weur",
@@ -86,37 +75,39 @@ export const COLO_TO_HINT: Readonly<Record<string, RegionHint>> = Object.freeze(
 	MAD: "weur",
 	MRS: "weur",
 	MXP: "weur",
-	// eeur
-	ARN: "eeur",
-	OTP: "eeur",
-	PRG: "eeur",
-	VIE: "eeur",
-	WAW: "eeur",
-	// apac (incl. former apac-ne / apac-se colos)
+	ARN: "weur",
+	OTP: "weur",
+	PRG: "weur",
+	VIE: "weur",
+	WAW: "weur",
+	// Asia-Pacific and Oceania
 	HKG: "apac",
 	ICN: "apac",
 	KIX: "apac",
 	NRT: "apac",
 	SIN: "apac",
-	// oc
-	AKL: "oc",
-	BNE: "oc",
-	MEL: "oc",
-	SYD: "oc",
-	// sam
+	AKL: "apac",
+	BNE: "apac",
+	MEL: "apac",
+	SYD: "apac",
+	// South America
 	GRU: "sam",
 	SCL: "sam",
-	// afr
-	JNB: "afr",
-	CPT: "afr",
+	// Africa maps to the EMEA clock.
+	JNB: "weur",
+	CPT: "weur",
 });
 
-/** Non-packed CF hints → nearest packed region. */
-const HINT_FALLBACK: Record<"apac-ne" | "apac-se" | "me", RegionHint> = {
+/** Non-packed Cloudflare hints → nearest packed region. */
+const HINT_FALLBACK: Readonly<Record<string, RegionHint>> = Object.freeze({
+	wnam: "enam",
+	eeur: "weur",
+	oc: "apac",
+	afr: "weur",
 	"apac-ne": "apac",
 	"apac-se": "apac",
 	me: "weur",
-};
+});
 
 export function isRegionHint(value: string): value is RegionHint {
 	return Object.prototype.hasOwnProperty.call(REGION_ID, value);
@@ -136,10 +127,7 @@ export function hintToId(hint: string | null | undefined): number {
 export function hostingHint(hint: LocationHint | string | null | undefined): RegionHint | null {
 	if (!hint) return null;
 	if (isRegionHint(hint)) return hint;
-	if (hint === "apac-ne" || hint === "apac-se" || hint === "me") {
-		return HINT_FALLBACK[hint];
-	}
-	return null;
+	return HINT_FALLBACK[hint] ?? null;
 }
 
 /** Map a cf.colo code to a packed region hint, if known. */
@@ -157,32 +145,18 @@ export function hintFromCfGeo(cf: IncomingRequestCfProperties | undefined): Regi
 	if (!cf) return null;
 
 	const continent = cf.continent;
-	const country = cf.country;
-	const longitude = cf.longitude != null ? Number(cf.longitude) : NaN;
 
 	switch (continent) {
 		case "NA":
-			// Rough split: west of ~100°W → wnam
-			if (!Number.isNaN(longitude) && longitude < -100) return "wnam";
 			return "enam";
-		case "EU": {
-			const eastern = new Set([
-				"PL", "CZ", "SK", "HU", "RO", "BG", "MD", "UA", "BY", "RU",
-				"FI", "EE", "LV", "LT", "SE", "NO", "AX",
-			]);
-			if (country && eastern.has(country)) return "eeur";
-			// longitude fallback
-			if (!Number.isNaN(longitude) && longitude > 15) return "eeur";
+		case "EU":
+		case "AF":
 			return "weur";
-		}
 		case "AS":
-			return "apac";
 		case "OC":
-			return "oc";
+			return "apac";
 		case "SA":
 			return "sam";
-		case "AF":
-			return "afr";
 		default:
 			return null;
 	}

@@ -1,0 +1,58 @@
+/** Lightweight, synchronous browser-side content detection. */
+export function detectContentType(content) {
+	const text = content.trim();
+	if (!text) return "plaintext";
+
+	if (!/\s/.test(text)) {
+		try {
+			const url = new URL(text);
+			if (url.protocol === "http:" || url.protocol === "https:") return "url";
+		} catch {
+			// Not a URL.
+		}
+	}
+
+	try {
+		const value = JSON.parse(text);
+		if (value !== null && typeof value === "object") return "json";
+	} catch {
+		// Not JSON.
+	}
+
+	if (/^<\?php\b/i.test(text)) return "php";
+	const pythonImport = /^\s*(?:from\s+[\w.]+\s+import\s+.+|import\s+[A-Za-z_]\w*(?:\.\w+)*(?:\s+as\s+\w+)?(?:\s*,\s*[A-Za-z_]\w*(?:\.\w+)*)*)\s*$/m;
+	const pythonSignals = [
+		/\b(?:len|range|enumerate|zip|isinstance)\s*\(/,
+		/\b(?:None|True|False)\b/,
+		/\bself\.\w+/,
+		/^\s*(?:if|for|while|with|try)\b.*:\s*$/m,
+	].filter((pattern) => pattern.test(text)).length;
+	if (/^#!.*\bpython\d*\b/m.test(text) || /^\s*(?:async\s+)?def\s+\w+\s*\([^)]*\).*:/m.test(text) || /^\s*class\s+\w+(?:\([^)]*\))?:/m.test(text) || /^\s*(?:print|input)\s*\(/m.test(text) || /^\s*(?:for\s+.+\s+in\s+.+|elif\s+.+|except(?:\s+.+)?):\s*$/m.test(text) || /^\s*if\s+__name__\s*==\s*["']__main__["']\s*:/m.test(text) || pythonImport.test(text) || pythonSignals >= 2) return "python";
+	if (/^#!.*\b(?:bash|sh|zsh|fish)\b/m.test(text)) return "shell";
+	if (/^#!.*\bruby\b/m.test(text)) return "ruby";
+	if (/^\s*<!doctype html\b/i.test(text) || /<(?:html|head|body|script|main|section)\b[^>]*>/i.test(text)) return "html";
+	if (/^\s*<\?xml\b/i.test(text) || (/<[A-Za-z][\w:.-]*(?:\s[^<>]*)?>/.test(text) && /<\/[A-Za-z][\w:.-]*>/.test(text))) return "xml";
+	if (/\bSystem\.(?:out|err)\.print(?:ln)?\s*\(/.test(text) || (/\bclass\s+\w+/.test(text) && (/\bpublic\s+static\s+void\s+main\s*\(/.test(text) || /^\s*import\s+java\./m.test(text)))) return "java";
+	if (/^\s*(?:interface|type|enum|namespace)\s+\w+/m.test(text) || (/\w+\??:\s*(?:string|number|boolean|unknown)\b/.test(text) && /\b(?:const|let|function|class)\b/.test(text))) return "typescript";
+	if (/\bconsole\.(?:log|error|warn)\s*\(/.test(text) || /\b(?:async\s+)?function\s+[$\w]+\s*\(/.test(text) || /^\s*(?:const|let|var)\s+[$\w]+\s*=.*;\s*$/m.test(text) || /=>\s*[\w({[]/.test(text) || /^\s*(?:import\s+.+\s+from\s+|export\s+(?:default\s+|\{))/m.test(text)) return "javascript";
+	if (/^\s*package\s+main\b/m.test(text) && /\bfunc\s+\w+\s*\(/.test(text)) return "go";
+	if (/\bfn\s+\w+\s*\([^)]*\).+\{/.test(text) && /\b(?:let\s+mut|println!|use\s+std::)/.test(text)) return "rust";
+	if (/^\s*using\s+System(?:\.|;)/m.test(text) && /\b(?:namespace|Console\.Write|class)\b/.test(text)) return "csharp";
+	if (/^\s*#include\s*<(?:iostream|vector|string|map|memory)>/m.test(text) || /\bstd::\w+/.test(text)) return "cpp";
+	if (/^\s*#include\s*<[^>]+>/m.test(text) && /\b(?:printf|scanf|int\s+main)\s*\(/.test(text)) return "c";
+	if (/^\s*(?:SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE)\b/im.test(text) && /\b(?:FROM|WHERE|VALUES|TABLE)\b/i.test(text)) return "sql";
+	if (/\b(?:color|display|margin|padding|background)\s*:/.test(text) && /[.#]?[A-Za-z][\w-]*\s*\{[^}]*\}/.test(text)) return "css";
+	if ((text.match(/^\s*[\w.-]+:\s+(?:[^|>{].*|$)/gm) ?? []).length >= 2 || (/^\s*---\s*$/m.test(text) && /^\s*[\w.-]+:\s+/m.test(text))) return "yaml";
+	if (/^\s*(?:require|require_relative)\s+["']/m.test(text) && /^\s*def\s+\w+/m.test(text)) return "ruby";
+
+	const markdownSignals = [
+		/^#{1,6}\s+\S/m,
+		/^\s*```[\w-]*\s*$/m,
+		/\[[^\]]+\]\([^)]+\)/,
+		/^\s*(?:[-*+]\s+|\d+\.\s+)\S/m,
+		/(?:\*\*|__)[^\n]+(?:\*\*|__)/,
+	].filter((pattern) => pattern.test(text)).length;
+	if (markdownSignals >= 2 || /^#{1,6}\s+\S/m.test(text) || /^\s*```[\s\S]*```\s*$/.test(text)) return "markdown";
+
+	return "plaintext";
+}

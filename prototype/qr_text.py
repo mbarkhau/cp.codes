@@ -40,7 +40,7 @@ except ImportError as exc:
     errmsg = f"Missing dependency. Install it with: python -m pip install 'qrcode[pil]'\n({exc})"
     raise SystemExit(errmsg)
 
-from cp_code import make_cp_code
+from cp_code import VERSION_0, make_cp_code
 
 
 # A "#" is an inked pixel, a "." is an non-inked/transparent pixel
@@ -586,7 +586,10 @@ def main() -> None:
         parser.error("module pixels must be a positive even number")
 
     # image = render_cp_code(cp_code=args.text, module_pixels=args.module_pixels)
-    image = render_cp_code(cp_code=make_cp_code(), module_pixels=args.module_pixels)
+    image = render_cp_code(
+        cp_code=make_cp_code(version=VERSION_0),
+        module_pixels=args.module_pixels,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     image.save(args.output)
 

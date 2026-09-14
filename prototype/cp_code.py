@@ -12,56 +12,96 @@ import datetime as dt
 
 # ID Format layout:
 #
+# The version is identified by the total ID length, not stored in the payload.
+#
+# 8-character ID = `CP` + 6-character Base32 (30 bit) payload:
+#
+# - timestamp: 24 bits — ticks since start of epoch
+# - counter: 4 bits — per-tick sequence number
+# - region ID: 2 bits
+#
+# Layout: [timestamp:24][counter:4][region:2]
+
 # 9-character ID = `CP` + 7-character Base32 (35 bit) payload:
 #
-# - version: 5 bits — `0..31` (format version; currently 0)
-# - timestamp: 20 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
-# - counter: 7 bits — per-tick sequence `0..127`
-# - region ID: 3 bits — `0..7`
+# - timestamp: 24 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
+# - counter: 9 bits — per-tick sequence number
+# - region ID: 2 bits
 #
-# Layout: [version:5][timestamp:20][counter:7][region:3]
+# Layout: [timestamp:24][counter:9][region:2]
 #
-# At 300s resolution, 20-bit ticks cover ~10 years
+# At 5 minute resolution, the 24-bit timestamp wraps around after ~160 years
+# Regions: enam=0, weur=1, apac=2, sam=3
 
 
 class CPCode(typ.NamedTuple):
-    version: int
-    timestamp: float
+    timestamp: int
     counter: int
     region_id: int
+    version: int
 
 
 ALPHABET = "0123456789ABCDEFGHIJKLPQRSTUVXYZ"
-VERSION_BITS = 5
-TIMESTAMP_BITS = 20
-COUNTER_BITS = 7
-REGION_ID_BITS = 3
-
-PAYLOAD_BITS = VERSION_BITS + TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS
-PAYLOAD_CHARS = 7  # 35 bits → 7 Base32 chars
 ID_PREFIX = "CP"
-ID_LENGTH = len(ID_PREFIX) + PAYLOAD_CHARS  # 9
+TIMESTAMP_BITS = 24
+REGION_ID_BITS = 2
+V0_COUNTER_BITS = 4
+V1_COUNTER_BITS = 9
 
-CURRENT_VERSION = 0
+VERSION_0 = 0  # id length=8 (payload=6)
+VERSION_1 = 1  # id length=9 (payload=7)
+CURRENT_VERSION = VERSION_0
+
+COUNTER_BITS_BY_VERSION = {
+    VERSION_0: V0_COUNTER_BITS,
+    VERSION_1: V1_COUNTER_BITS,
+}
+assert all(
+    (TIMESTAMP_BITS + counter_bits + REGION_ID_BITS) % 5 == 0
+    for counter_bits in COUNTER_BITS_BY_VERSION.values()
+)
+
+PAYLOAD_CHARS_BY_VERSION = {
+    version: (TIMESTAMP_BITS + counter_bits + REGION_ID_BITS) // 5
+    for version, counter_bits in COUNTER_BITS_BY_VERSION.items()
+}
+ID_LENGTH_BY_VERSION = {
+    version: len(ID_PREFIX) + payload_chars
+    for version, payload_chars in PAYLOAD_CHARS_BY_VERSION.items()
+}
+VERSION_BY_ID_LENGTH = {
+    id_length: version for version, id_length in ID_LENGTH_BY_VERSION.items()
+}
+
+assert ID_LENGTH_BY_VERSION == {VERSION_0: 8, VERSION_1: 9}
+
+# Aliases for the default format.
+PAYLOAD_CHARS = PAYLOAD_CHARS_BY_VERSION[CURRENT_VERSION]
+PAYLOAD_BITS = PAYLOAD_CHARS * 5
+ID_LENGTH = ID_LENGTH_BY_VERSION[CURRENT_VERSION]
+
 TIME_EPOCH = 1_785_000_000
-TIME_RESOLUTION = 300
+TIME_RESOLUTION = 5 * 60
 MAX_TICK = 1 << TIMESTAMP_BITS
-MAX_COUNTER = 1 << COUNTER_BITS
+V0_MAX_COUNTER = 1 << V0_COUNTER_BITS
+V1_MAX_COUNTER = 1 << V1_COUNTER_BITS
 
-_last_timestamp = 0.0
-_last_counter = -1
+_last_parts = {
+    VERSION_0: (0, -1),
+    VERSION_1: (0, -1),
+}
 _last_lock = threading.Lock()
 
 
-def timestamp_to_tick(timestamp: float) -> int:
+def timestamp_to_tick(timestamp: int | float) -> int:
     return round((timestamp - TIME_EPOCH) / TIME_RESOLUTION)
 
 
-def tick_to_timestamp(tick: int) -> float:
+def tick_to_timestamp(tick: int) -> int:
     return TIME_EPOCH + tick * TIME_RESOLUTION
 
 
-def align_timestamp(timestamp: float) -> float:
+def align_timestamp(timestamp: int | float) -> int:
     return tick_to_timestamp(timestamp_to_tick(timestamp))
 
 
@@ -69,7 +109,8 @@ def next_parts(
     last_ts: float = 0.0,
     last_counter: int = -1,
     now: float | None = None,
-) -> tuple[float, int]:
+    max_counter: int = V0_MAX_COUNTER,
+) -> tuple[int, int]:
     """Next monotonic (timestamp, counter) on the TIME_RESOLUTION grid."""
     if now is None:
         now = time.time()
@@ -86,7 +127,7 @@ def next_parts(
         else:
             tick = last_tick
             counter = last_counter + 1
-            if counter >= MAX_COUNTER:
+            if counter >= max_counter:
                 counter = 0
                 tick = last_tick + 1
     if not 0 <= tick < MAX_TICK:
@@ -95,12 +136,14 @@ def next_parts(
 
 
 def encode_cp_code(cp_code: CPCode) -> str:
-    if not 0 <= cp_code.version < (1 << VERSION_BITS):
-        raise ValueError(f"version must be between 0 and {(1 << VERSION_BITS) - 1}")
-    if cp_code.version != CURRENT_VERSION:
-        raise ValueError(f"unsupported version: {cp_code.version}")
-    if not 0 <= cp_code.counter < MAX_COUNTER:
-        raise ValueError(f"counter must be between 0 and {MAX_COUNTER - 1}")
+    try:
+        counter_bits = COUNTER_BITS_BY_VERSION[cp_code.version]
+    except KeyError:
+        raise ValueError(f"unsupported version: {cp_code.version}") from None
+
+    max_counter = 1 << counter_bits
+    if not 0 <= cp_code.counter < max_counter:
+        raise ValueError(f"counter must be between 0 and {max_counter - 1}")
     if not 0 <= cp_code.region_id < (1 << REGION_ID_BITS):
         raise ValueError(f"region_id must be between 0 and {(1 << REGION_ID_BITS) - 1}")
 
@@ -114,16 +157,14 @@ def encode_cp_code(cp_code: CPCode) -> str:
     if not 0 <= ts_val < MAX_TICK:
         raise ValueError("timestamp is outside the supported range")
 
-    # [version:5][timestamp:20][counter:7][region:3] = 35 bits
     payload = (
-        (cp_code.version << (TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS))
-        | (ts_val << (COUNTER_BITS + REGION_ID_BITS))
+        (ts_val << (counter_bits + REGION_ID_BITS))
         | (cp_code.counter << REGION_ID_BITS)
         | cp_code.region_id
     )
 
     chars = []
-    for _ in range(PAYLOAD_CHARS):
+    for _ in range(PAYLOAD_CHARS_BY_VERSION[cp_code.version]):
         chars.append(ALPHABET[payload & 0x1F])
         payload >>= 5
     return ID_PREFIX + "".join(reversed(chars))
@@ -131,36 +172,38 @@ def encode_cp_code(cp_code: CPCode) -> str:
 
 def generate_cp_code(
     region_id: int = 0,
-    timestamp: float | None = None,
+    timestamp: int | float | None = None,
     counter: int | None = None,
     version: int = CURRENT_VERSION,
 ) -> CPCode:
-    global _last_timestamp, _last_counter
+    try:
+        counter_bits = COUNTER_BITS_BY_VERSION[version]
+    except KeyError:
+        raise ValueError(f"unsupported version: {version}") from None
 
-    if not 0 <= version < (1 << VERSION_BITS):
-        raise ValueError(f"version must be between 0 and {(1 << VERSION_BITS) - 1}")
-    if version != CURRENT_VERSION:
-        raise ValueError(f"unsupported version: {version}")
+    max_counter = 1 << counter_bits
     if not 0 <= region_id < (1 << REGION_ID_BITS):
         raise ValueError(f"region_id must be between 0 and {(1 << REGION_ID_BITS) - 1}")
 
     if timestamp is None:
         if counter is not None:
             raise ValueError("counter requires an explicit timestamp")
+
         with _last_lock:
-            ts, ctr = next_parts(_last_timestamp, _last_counter)
-            _last_timestamp = ts
-            _last_counter = ctr
+            last_ts, last_counter = _last_parts[version]
+            ts, ctr = next_parts(last_ts, last_counter, max_counter=max_counter)
+            _last_parts[version] = (ts, ctr)
     else:
         ts = align_timestamp(timestamp)
         tick = timestamp_to_tick(ts)
+
         if not 0 <= tick < MAX_TICK:
             raise ValueError("timestamp is outside the supported range")
         ctr = 0 if counter is None else counter
-        if not 0 <= ctr < MAX_COUNTER:
-            raise ValueError(f"counter must be between 0 and {MAX_COUNTER - 1}")
+        if not 0 <= ctr < max_counter:
+            raise ValueError(f"counter must be between 0 and {max_counter - 1}")
 
-    return CPCode(version, ts, ctr, region_id)
+    return CPCode(ts, ctr, region_id, version)
 
 
 def make_cp_code(*args, **kwargs) -> str:
@@ -168,12 +211,15 @@ def make_cp_code(*args, **kwargs) -> str:
 
 
 def parse_cp_code(cp_code_data: str) -> CPCode:
-    if not isinstance(cp_code_data, str) or len(cp_code_data) != ID_LENGTH:
-        raise ValueError(f"ID must be exactly {ID_LENGTH} characters")
+    if not isinstance(cp_code_data, str) or len(cp_code_data) not in VERSION_BY_ID_LENGTH:
+        lengths = " or ".join(str(length) for length in sorted(VERSION_BY_ID_LENGTH))
+        raise ValueError(f"ID must be exactly {lengths} characters")
 
     if not cp_code_data.startswith(ID_PREFIX):
         raise ValueError(f"ID must use prefix {ID_PREFIX!r}")
 
+    version = VERSION_BY_ID_LENGTH[len(cp_code_data)]
+    counter_bits = COUNTER_BITS_BY_VERSION[version]
     payload = 0
     for char in cp_code_data[len(ID_PREFIX) :].upper():
         try:
@@ -182,18 +228,11 @@ def parse_cp_code(cp_code_data: str) -> CPCode:
             raise ValueError(f"invalid Base32 character: {char!r}") from None
         payload = (payload << 5) | digit
 
-    # [version:5][timestamp:20][counter:7][region:3]
-    version = (payload >> (TIMESTAMP_BITS + COUNTER_BITS + REGION_ID_BITS)) & (
-        (1 << VERSION_BITS) - 1
-    )
-    ts_val = (payload >> (COUNTER_BITS + REGION_ID_BITS)) & ((1 << TIMESTAMP_BITS) - 1)
-    counter = (payload >> REGION_ID_BITS) & ((1 << COUNTER_BITS) - 1)
+    ts_val = (payload >> (counter_bits + REGION_ID_BITS)) & ((1 << TIMESTAMP_BITS) - 1)
+    counter = (payload >> REGION_ID_BITS) & ((1 << counter_bits) - 1)
     region_id = payload & ((1 << REGION_ID_BITS) - 1)
 
-    if version != CURRENT_VERSION:
-        raise ValueError(f"unsupported version: {version}")
-
-    return CPCode(version, tick_to_timestamp(ts_val), counter, region_id)
+    return CPCode(tick_to_timestamp(ts_val), counter, region_id, version)
 
 
 def main() -> None:
@@ -202,24 +241,34 @@ def main() -> None:
     end_date = dt.datetime.fromtimestamp(end, tz=dt.timezone.utc)
     duration_s = MAX_TICK * TIME_RESOLUTION
     print(
-        f"version {CURRENT_VERSION}: origin={TIME_EPOCH} ({start_date.date()}) "
-        f"end={int(end)} ({end_date.date()}) "
-        f"resolution={TIME_RESOLUTION}s "
-        f"duration={duration_s}s ({duration_s / 86400:.1f} days, {duration_s / 31557600:.2f} years) "
-        f"id_length={ID_LENGTH} payload_bits={PAYLOAD_BITS}"
+        f"epoch_duration={MAX_TICK} ticks * {TIME_RESOLUTION}s = {duration_s}s "
+        f"({duration_s / 31557600:.2f} years)"
     )
 
-    prev_data = None
-    for _ in range(4):
-        cp_code = generate_cp_code(region_id=0)
-        cp_code_data = encode_cp_code(cp_code)
-        print(cp_code_data, cp_code)
-        assert parse_cp_code(cp_code_data) == cp_code
-        assert len(cp_code_data) == ID_LENGTH
+    for version in COUNTER_BITS_BY_VERSION:
+        counter_bits = COUNTER_BITS_BY_VERSION[version]
+        id_length = ID_LENGTH_BY_VERSION[version]
+        payload_bits = PAYLOAD_CHARS_BY_VERSION[version] * 5
+        print()
+        print(
+            f"version {version}: origin={TIME_EPOCH} ({start_date.date()}) "
+            f"end={end} ({end_date.date()}) "
+            f"resolution={TIME_RESOLUTION}s "
+            f"counter_bits={counter_bits} "
+            f"id_length={id_length} payload_bits={payload_bits}"
+        )
 
-        if prev_data is not None:
-            assert cp_code_data > prev_data
-        prev_data = cp_code_data
+        prev_data = None
+        for _ in range(4):
+            cp_code = generate_cp_code(region_id=0, version=version)
+            cp_code_data = encode_cp_code(cp_code)
+            print(cp_code_data, cp_code)
+            assert parse_cp_code(cp_code_data) == cp_code
+            assert len(cp_code_data) == id_length
+
+            if prev_data is not None:
+                assert cp_code_data > prev_data
+            prev_data = cp_code_data
 
 
 if __name__ == "__main__":
