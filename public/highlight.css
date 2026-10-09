@@ -1,0 +1,48 @@
+/* Token colors only: preserve the viewer's existing spacing, font and background. */
+#paste-content {
+  --syntax-comment: #59636e;
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-number: #0550ae;
+  --syntax-title: #6639ba;
+  --syntax-type: #953800;
+  --syntax-tag: #116329;
+}
+:root[data-theme="dark"] #paste-content {
+  --syntax-comment: #919ba5;
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-number: #79c0ff;
+  --syntax-title: #d2a8ff;
+  --syntax-type: #ffa657;
+  --syntax-tag: #7ee787;
+}
+#paste-content .hljs { color: var(--fg); }
+#paste-content .hljs-comment,
+#paste-content .hljs-quote { color: var(--syntax-comment); }
+#paste-content .hljs-keyword,
+#paste-content .hljs-doctag,
+#paste-content .hljs-template-tag,
+#paste-content .hljs-type { color: var(--syntax-keyword); }
+#paste-content .hljs-string,
+#paste-content .hljs-regexp,
+#paste-content .hljs-meta .hljs-string { color: var(--syntax-string); }
+#paste-content .hljs-number,
+#paste-content .hljs-literal,
+#paste-content .hljs-attr,
+#paste-content .hljs-variable,
+#paste-content .hljs-template-variable { color: var(--syntax-number); }
+#paste-content .hljs-title { color: var(--syntax-title); }
+#paste-content .hljs-built_in,
+#paste-content .hljs-symbol { color: var(--syntax-type); }
+#paste-content .hljs-tag,
+#paste-content .hljs-name,
+#paste-content .hljs-selector-tag,
+#paste-content .hljs-selector-class,
+#paste-content .hljs-selector-id { color: var(--syntax-tag); }
+#paste-content .hljs-meta { color: var(--syntax-number); }
+#paste-content .hljs-section { color: var(--syntax-number); font-weight: bold; }
+#paste-content .hljs-emphasis { font-style: italic; }
+#paste-content .hljs-strong { font-weight: bold; }
+#paste-content .hljs-addition { color: var(--syntax-tag); }
+#paste-content .hljs-deletion { color: var(--syntax-keyword); }

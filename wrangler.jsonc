@@ -41,6 +41,10 @@
 			{
 				"name": "PASTE_INDEX",
 				"class_name": "PasteIndex"
+			},
+			{
+				"name": "STAFF_SESSIONS",
+				"class_name": "StaffSession"
 			}
 		]
 	},
@@ -61,6 +65,10 @@
 			"tag": "v4",
 			"new_sqlite_classes": ["PowKey"],
 			"deleted_classes": ["PowGate"]
+		},
+		{
+			"tag": "v5",
+			"new_sqlite_classes": ["StaffSession"]
 		}
 	]
 }

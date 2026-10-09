@@ -1,7 +1,12 @@
 import { CONTENT_TYPES, rawContentType } from "./content_type";
 import * as paste from "./paste";
-import { hexToBytes, sha256Hex } from "./pow";
+import { hexToBytes, isDifficultyBits, MAX_POW_DIFFICULTY_BITS, powKeyStub, sha256Hex } from "./pow";
+import { getPowDifficultyState, type PowDifficultyState } from "./pow_settings";
 import { layout, viewPage } from "./ui";
+import {
+	allowLoginAttempt, createSession, revokeSession, sessionCookie,
+	sessionToken, sessionTransportAllowed, sessionUsername,
+} from "./session";
 
 export type StaffRole = "admin" | "mod";
 export type StaffUser = { username: string; role: StaffRole };
@@ -46,12 +51,11 @@ function hashesEqual(actual: string, expected: string): boolean {
 	return crypto.subtle.timingSafeEqual(hexToBytes(actual), hexToBytes(expected));
 }
 
-export async function authenticateStaff(request: Request): Promise<StaffUser | null> {
-	const credentials = parseBasicCredentials(request);
-	if (!credentials) return null;
+async function authenticateCredentials(username: string, password: string): Promise<StaffUser | null> {
+	if (username.length > 100 || password.length > 256) return null;
 	const [usernameHash, passwordHash] = await Promise.all([
-		sha256Hex(credentials.username),
-		sha256Hex(credentials.password),
+		sha256Hex(username),
+		sha256Hex(password),
 	]);
 	let authenticated: StaffUser | null = null;
 	for (const user of STORED_USERS) {
@@ -62,19 +66,31 @@ export async function authenticateStaff(request: Request): Promise<StaffUser | n
 	return authenticated;
 }
 
+export async function authenticateStaff(request: Request, env: Env): Promise<StaffUser | null> {
+	const username = await sessionUsername(request, env);
+	const user = STAFF_USERS.find((candidate) => candidate.username === username);
+	if (user) return { ...user };
+	// Explicit Basic Auth remains supported for CLI/API clients; browsers use cookies.
+	const credentials = parseBasicCredentials(request);
+	return credentials ? authenticateCredentials(credentials.username, credentials.password) : null;
+}
+
 function staffHeaders(contentType: string): Headers {
 	return new Headers({
 		"content-type": contentType,
 		"cache-control": "no-store, private",
 		"referrer-policy": "no-referrer",
 		"x-content-type-options": "nosniff",
-		vary: "Authorization",
+		vary: "Cookie, Authorization",
 	});
 }
 
-function unauthorized(api: boolean): Response {
+function unauthorized(api: boolean, request: Request): Response {
 	const headers = staffHeaders(api ? "application/json; charset=utf-8" : "text/plain; charset=utf-8");
-	headers.set("www-authenticate", `Basic realm="cp.codes staff", charset="UTF-8"`);
+	// Do not prompt browser fetches for a password when their session expires.
+	if (api && !sessionToken(request) && !request.headers.has("sec-fetch-site")) {
+		headers.set("www-authenticate", `Basic realm="cp.codes staff", charset="UTF-8"`);
+	}
 	return new Response(api ? JSON.stringify({ error: "authentication required" }) : "Authentication required", {
 		status: 401,
 		headers,
@@ -102,13 +118,13 @@ function badRequest(message: string, api = true, status = 400): Response {
  * Sec-Fetch-Site is browser-controlled; Origin remains the fallback for clients
  * which do not send Fetch Metadata headers.
  */
-function hasValidMutationOrigin(request: Request): boolean {
+function hasValidMutationOrigin(request: Request, allowMissingOrigin = sessionToken(request) === null): boolean {
 	const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
 	if (fetchSite === "same-origin") return true;
 	if (fetchSite === "same-site" || fetchSite === "cross-site") return false;
 
 	const origin = request.headers.get("origin");
-	if (!origin) return true;
+	if (!origin) return allowMissingOrigin;
 	if (origin === "null") return false;
 	try {
 		const originUrl = new URL(origin);
@@ -129,6 +145,99 @@ function escapeHtml(value: unknown): string {
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;")
 		.replace(/'/g, "&#39;");
+}
+
+function safeReturnTo(value: unknown, request: Request): string {
+	if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\\\\\u0000-\u0020\u007f]/.test(value)) return "/admin/pastes";
+	const target = new URL(value, request.url);
+	if (target.origin !== new URL(request.url).origin || ["/login", "/logout"].includes(target.pathname.replace(/\/+$/, ""))) return "/admin/pastes";
+	return target.pathname + target.search;
+}
+
+function authRedirect(location: string, cookie?: string): Response {
+	const headers = staffHeaders("text/plain; charset=utf-8");
+	headers.set("location", location);
+	if (cookie !== undefined) headers.set("set-cookie", cookie);
+	return new Response(null, { status: 303, headers });
+}
+
+function loginPage(returnTo: string, message = "", status = 200): Response {
+	const html = layout("Staff login — cp.codes", `<section class="card">
+<h1>Staff login</h1>
+${message ? `<p class="status err" role="alert">${escapeHtml(message)}</p>` : ""}
+<form method="post" action="/login">
+<input type="hidden" name="next" value="${escapeHtml(returnTo)}" />
+<label for="username">Username</label><input id="username" name="username" type="text" autocomplete="username" maxlength="100" required autofocus />
+<label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required />
+<p><button type="submit">Log in</button></p>
+</form><p>Staff sessions expire after eight hours. No login is needed to publish a paste.</p>
+</section>`, undefined, undefined, { currentPath: "/login" });
+	const headers = staffHeaders("text/html; charset=utf-8");
+	headers.set("content-security-policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+	return new Response(html, { status, headers });
+}
+
+async function readLoginForm(request: Request): Promise<URLSearchParams> {
+	if (!request.headers.get("content-type")?.startsWith("application/x-www-form-urlencoded") || !request.body) {
+		throw new Error("expected a login form");
+	}
+	const reader = request.body.getReader();
+	const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+	let bytes = 0;
+	let text = "";
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			bytes += value.byteLength;
+			if (bytes > 4096) {
+				await reader.cancel("login form is too large");
+				throw new Error("login form is too large");
+			}
+			text += decoder.decode(value, { stream: true });
+		}
+		return new URLSearchParams(text + decoder.decode());
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+export async function handleLogin(request: Request, env: Env): Promise<Response> {
+	if (!sessionTransportAllowed(request)) return badRequest("staff login requires HTTPS (except loopback development)", false, 400);
+	const url = new URL(request.url);
+	if (request.method === "GET" || request.method === "HEAD") {
+		const next = safeReturnTo(url.searchParams.get("next"), request);
+		return await authenticateStaff(request, env) ? authRedirect(next) : loginPage(next);
+	}
+	if (request.method !== "POST") return methodNotAllowed(false);
+	if (!hasValidMutationOrigin(request, false)) return badRequest("invalid request origin", false, 403);
+	let form: URLSearchParams;
+	try {
+		form = await readLoginForm(request);
+	} catch {
+		return badRequest("invalid login form", false);
+	}
+	const next = safeReturnTo(form.get("next"), request);
+	if (!await allowLoginAttempt(request, env)) {
+		const response = loginPage(next, "Too many login attempts. Try again in ten minutes.", 429);
+		response.headers.set("retry-after", "600");
+		return response;
+	}
+	const username = form.get("username");
+	const password = form.get("password");
+	const user = typeof username === "string" && typeof password === "string"
+		? await authenticateCredentials(username, password) : null;
+	if (!user) return loginPage(next, "Invalid username or password.", 401);
+	const token = await createSession(env, user.username);
+	await revokeSession(request, env); // Rotate any previous session after successful authentication.
+	return authRedirect(next, sessionCookie(request, token));
+}
+
+export async function handleLogout(request: Request, env: Env): Promise<Response> {
+	if (request.method !== "POST") return methodNotAllowed(false);
+	if (!sessionTransportAllowed(request) || !hasValidMutationOrigin(request, false)) return badRequest("invalid request origin", false, 403);
+	await revokeSession(request, env);
+	return authRedirect("/login", sessionCookie(request, "", 0));
 }
 
 function parseListOptions(url: URL): { cursor?: string; limit: number } | Response {
@@ -307,6 +416,8 @@ const REVIEW_SCRIPT = `<script>
 </script>`;
 
 const ADMIN_STYLE = `
+#minimum-difficulty{max-width:12rem;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:.55rem .7rem}
+#minimum-difficulty:focus{outline:2px solid var(--focus);outline-offset:1px}
 .staff-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:.75rem;margin-bottom:1rem}.staff-heading h1{margin:0;font-size:1.35rem}.identity,.muted,.small{color:var(--muted)}.small{font-size:.75rem}.mono,pre{font-family:var(--mono)}.strong{font-weight:700}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:.7rem .65rem;border-top:1px solid var(--border);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}.review-table td{min-width:8rem}.review-table th:nth-child(3),.review-table th:nth-child(4),.review-table td:nth-child(3),.review-table td:nth-child(4){text-align:center}.review-table td:nth-child(5){min-width:10rem}.pending-row{background:color-mix(in srgb,var(--danger) 7%,transparent)}.flag{display:inline-block;font-size:.75rem;font-weight:650}.flag.pending{color:var(--danger)}.report-list{max-width:24rem;margin:.4rem 0;padding-left:1.2rem}.report-list li+li{margin-top:.5rem}.cell-action,.classification-action{margin:.45rem 0 0}.cell-action button,.classification-action select{width:100%;min-height:2.25rem;padding:.35rem .55rem;font:inherit}.cell-action .secondary{color:var(--fg);background:var(--surface);border-color:var(--border)}.visibility{font-weight:650}.visibility-hidden,.visibility-deleted{color:var(--danger)}.review-filters{display:grid;grid-template-columns:repeat(7,minmax(8rem,1fr));gap:.7rem;align-items:end}.review-filters label{margin:0}.review-filters select{display:block;width:100%;margin-top:.25rem}.pager{display:flex;justify-content:flex-end;align-items:center;gap:.75rem;margin-top:1rem}.button{padding:.5rem .8rem;border:1px solid var(--border);border-radius:6px;text-decoration:none}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}details summary{cursor:pointer;color:var(--accent)}pre{max-height:28rem;overflow:auto;padding:1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:.75rem;white-space:pre-wrap;overflow-wrap:anywhere}.referer{max-width:32rem;overflow-wrap:anywhere}@media(max-width:1100px){.review-filters{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:700px){.review-filters{grid-template-columns:1fr 1fr}.card{padding:.8rem}}
 `.trim();
 
@@ -330,6 +441,65 @@ function reviewPage(user: StaffUser, page: paste.ReviewPastePage, options: Revie
 	const end = page.offset + page.items.length;
 	const pager = `<div class="pager">${previous}<span class="muted">${start.toLocaleString("en-US")}–${end.toLocaleString("en-US")} of ${page.total.toLocaleString("en-US")}</span>${next}</div>`;
 	return staffPage(user, "/admin/pastes", "Moderation review", `${reviewFilters(options)}<section class="card">${pasteTable(page.items, returnTo)}${pager}</section>`, REVIEW_SCRIPT);
+}
+
+function powSettingsPage(user: StaffUser, state: PowDifficultyState): Response {
+	const disabled = user.role !== "admin" ? " disabled" : "";
+	return staffPage(user, "/admin/pow", "Proof of work", `<section class="card">
+<h2>Current difficulty</h2>
+<dl class="pow-fields">
+<dt>Minimum difficulty</dt><dd>${state.minimum_difficulty_bits} leading zero bits</dd>
+<dt>Current difficulty for a base-size paste</dt><dd>${state.current_difficulty_bits} leading zero bits</dd>
+<dt>Traffic adjustment</dt><dd>+${state.rate_extra_bits} bits · ${state.recent_paste_count} pastes in the last ${state.rate_window_seconds / 60} minutes</dd>
+<dt>Deployment default</dt><dd>${state.configured_default_bits} bits · ${state.override_difficulty_bits === null ? "using deployment default" : "admin override active"}</dd>
+${state.updated_at ? `<dt>Last changed</dt><dd>${escapeHtml(state.updated_at)} by ${escapeHtml(state.updated_by)}</dd>` : ""}
+</dl>
+<p>The current difficulty applies to pastes up to ${paste.DEFAULT_PASTE_BYTES.toLocaleString("en-US")} bytes. Each additional started ${paste.PASTE_DIFFICULTY_STEP_BYTES.toLocaleString("en-US")}-byte block adds one bit, capped at ${MAX_POW_DIFFICULTY_BITS} bits.</p>
+<p><a href="/admin/pow">Refresh current difficulty</a></p>
+</section>
+<section class="card"><h2>Set minimum difficulty</h2>
+${disabled ? `<p>Only admins can change this setting.</p>` : ""}
+<form method="post" action="/admin/pow">
+<label for="minimum-difficulty">Minimum leading zero bits (0–${MAX_POW_DIFFICULTY_BITS})</label>
+<input id="minimum-difficulty" name="minimum_difficulty_bits" type="number" min="0" max="${MAX_POW_DIFFICULTY_BITS}" step="1" value="${state.minimum_difficulty_bits}" required${disabled} />
+<p><button type="submit"${disabled}>Save minimum difficulty</button></p>
+</form>
+<form method="post" action="/admin/pow"><input type="hidden" name="action" value="reset" /><button type="submit"${disabled}>Use deployment default (${state.configured_default_bits} bits)</button></form>
+<p>Each extra bit doubles expected work. Zero bits disables the minimum work requirement; very high values effectively prevent uploads.</p>
+<p>Changes persist across restarts and apply to newly issued challenges. Existing signed challenges remain valid until they expire. Traffic and size adjustments still apply.</p>
+</section>`);
+}
+
+async function handlePowSettings(request: Request, env: Env, user: StaffUser, api: boolean): Promise<Response> {
+	const reading = request.method === "GET" || request.method === "HEAD";
+	if (!reading) {
+		if (request.method !== "POST" && !(api && request.method === "PATCH")) return methodNotAllowed(api);
+		if (user.role !== "admin") return badRequest("admin role required", api, 403);
+		if (!hasValidMutationOrigin(request)) return badRequest("invalid request origin", api, 403);
+		let value: unknown;
+		try {
+			if (api) {
+				const body: unknown = await request.json();
+				if (typeof body !== "object" || body === null || Array.isArray(body)) return badRequest("body must be an object");
+				value = (body as Record<string, unknown>).minimum_difficulty_bits;
+			} else {
+				const form = await request.formData();
+				const raw = form.get("minimum_difficulty_bits");
+				value = form.get("action") === "reset" ? null
+					: typeof raw === "string" && /^[0-9]+$/.test(raw) ? Number(raw) : undefined;
+			}
+		} catch {
+			return badRequest("invalid request body", api);
+		}
+		if (value !== null && !isDifficultyBits(value)) {
+			return badRequest(`minimum_difficulty_bits must be an integer from 0 to ${MAX_POW_DIFFICULTY_BITS}, or null to use the deployment default`, api);
+		}
+		await powKeyStub(env).setDifficultySettings(value, user.username);
+		if (!api) return new Response(null, { status: 303, headers: { location: "/admin/pow", "cache-control": "no-store" } });
+	}
+	const state = await getPowDifficultyState(env);
+	return api ? new Response(JSON.stringify(state), { headers: staffHeaders("application/json; charset=utf-8") })
+		: powSettingsPage(user, state);
 }
 
 function usersPage(user: StaffUser): Response {
@@ -494,8 +664,15 @@ async function handleStaffPasteContent(request: Request, env: Env, id: string, m
 /** Handle authenticated staff HTML and JSON endpoints. */
 export async function handleAdminRequest(request: Request, env: Env, url: URL, path: string): Promise<Response> {
 	const api = path.startsWith("/api/admin") || path === "/admin/api";
-	const user = await authenticateStaff(request);
-	if (!user) return unauthorized(api);
+	const user = await authenticateStaff(request, env);
+	if (!user) {
+		const dataRoute = /\/(raw|content)$/.test(path) || /^\/admin\/paste\/CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10})$/.test(path);
+		if (!api && !dataRoute && (request.method === "GET" || request.method === "HEAD")) {
+			return authRedirect(`/login?next=${encodeURIComponent(url.pathname + url.search)}`);
+		}
+		return unauthorized(api, request);
+	}
+	if (path === "/admin/pow" || path === "/api/admin/pow") return handlePowSettings(request, env, user, api);
 
 	const contentMatch = path.match(/^\/admin\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/(view|raw|content)$/);
 	if (contentMatch) {

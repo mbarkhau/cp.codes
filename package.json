@@ -8,9 +8,14 @@
 		"start": "wrangler dev",
 		"deploy": "wrangler deploy",
 		"cf-typegen": "wrangler types",
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"test:staff-review": "node --test scripts/staff-review.test.mjs",
+		"test:pow-settings": "node --test scripts/pow-settings.test.mjs",
+		"test:session": "node --test scripts/session.test.mjs",
+		"classify": "node scripts/classify-pastes.mjs"
 	},
 	"devDependencies": {
+		"@types/node": "^22.20.2",
 		"typescript": "^5.9.2",
 		"wrangler": "^4.129.0"
 	}

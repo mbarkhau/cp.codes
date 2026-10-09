@@ -114,8 +114,8 @@ async function classifyPaste(id, { baseUrl, maxBytes, key, fetchImpl }) {
 		!Number.isSafeInteger(metadata.byte_length) || metadata.byte_length < 0) {
 		throw new Error("Paste metadata: invalid response");
 	}
-	if (metadata.content_type === "png" || metadata.content_type === "jpeg") {
-		return { id, status: "skipped", reason: "image moderation is not supported by the documented Jev API" };
+	if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(metadata.content_type)) {
+		return { id, status: "skipped", reason: "image, audio, and video moderation is not supported by the documented Jev API" };
 	}
 	if (metadata.byte_length > maxBytes) {
 		return { id, status: "skipped", reason: "paste exceeds --max-bytes", byte_length: metadata.byte_length };
@@ -133,6 +133,9 @@ async function classifyPaste(id, { baseUrl, maxBytes, key, fetchImpl }) {
 		throw new Error("Paste content: length or SHA-256 mismatch");
 	}
 	const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	if (/^data:(?:image|audio|video)\//i.test(content.trimStart())) {
+		return { id, status: "skipped", reason: "image, audio, and video moderation is not supported by the documented Jev API" };
+	}
 	const result = await fetchJson(fetchImpl, DECISIONS_URL, {
 		method: "POST",
 		headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },

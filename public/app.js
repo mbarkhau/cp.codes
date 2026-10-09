@@ -3,7 +3,8 @@
  * The nonce search is split across a Web Worker pool. Each worker uses native
  * Web Crypto when available and lazily loads hash-wasm as a fallback.
  */
-import { contentTypeForFilename, detectContentType } from "./content_type.js?v=4";
+import { contentTypeForFilename, detectContentType } from "./content_type.js?v=7";
+import { MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType } from "./media.js?v=1";
 
 const contentEl = document.getElementById("content");
 const descriptionEl = document.getElementById("description");
@@ -141,49 +142,6 @@ moderationConsentEl.addEventListener("change", updatePublishState);
 updateBytes();
 updatePublishState();
 
-const IMAGE_MEDIA_TYPES = {
-	png: "image/png",
-	jpeg: "image/jpeg",
-};
-
-function imageTypeHint(file) {
-	const mediaType = file.type.toLowerCase().split(";", 1)[0];
-	if (mediaType === "image/png") return "png";
-	if (mediaType === "image/jpeg") return "jpeg";
-	const extension = file.name.split(".").pop()?.toLowerCase();
-	if (extension === "png") return "png";
-	if (extension === "jpg" || extension === "jpeg") return "jpeg";
-	return null;
-}
-
-function imageTypeFromBytes(bytes) {
-	if (
-		bytes.byteLength >= 8 &&
-		[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-			.every((value, index) => bytes[index] === value)
-	) return "png";
-	if (
-		bytes.byteLength >= 4 &&
-		bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff &&
-		bytes[bytes.byteLength - 2] === 0xff && bytes[bytes.byteLength - 1] === 0xd9
-	) return "jpeg";
-	return null;
-}
-
-function imageDataUrlType(content) {
-	const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(content.trim());
-	if (!match || match[2].length % 4 !== 0) return null;
-	try {
-		const binary = atob(match[2]);
-		const bytes = new Uint8Array(binary.length);
-		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-		const actualType = imageTypeFromBytes(bytes);
-		return actualType === match[1] ? actualType : null;
-	} catch {
-		return null;
-	}
-}
-
 async function verifyDecodableImage(dataUrl) {
 	const image = new Image();
 	image.src = dataUrl;
@@ -230,7 +188,7 @@ function isTextFile(file) {
 }
 
 async function loadFile(file) {
-	const hintedImageType = imageTypeHint(file);
+	const hintedMediaType = mediaTypeHint(file);
 	setStatus(`Reading “${file.name}”…`);
 	let bytes;
 	try {
@@ -241,22 +199,24 @@ async function loadFile(file) {
 	}
 
 	let text;
-	const actualImageType = imageTypeFromBytes(bytes);
-	if (actualImageType) {
-		if (hintedImageType && actualImageType !== hintedImageType) {
-			setStatus(`File “${file.name}” does not match its PNG/JPEG type.`, "err");
+	const actualMediaType = mediaTypeFromBytes(bytes);
+	if (actualMediaType) {
+		if (hintedMediaType && actualMediaType !== hintedMediaType) {
+			setStatus(`File “${file.name}” does not match its declared media type.`, "err");
 			return;
 		}
-		text = `data:${IMAGE_MEDIA_TYPES[actualImageType]};base64,${bytesToBase64(bytes)}`;
-		try {
-			await verifyDecodableImage(text);
-		} catch {
-			setStatus(`File “${file.name}” could not be decoded as an image.`, "err");
-			return;
+		text = `data:${MEDIA_MIME_TYPES[actualMediaType]};base64,${bytesToBase64(bytes)}`;
+		if (["png", "jpeg", "webp", "gif"].includes(actualMediaType)) {
+			try {
+				await verifyDecodableImage(text);
+			} catch {
+				setStatus(`File “${file.name}” could not be decoded as an image.`, "err");
+				return;
+			}
 		}
 	} else {
-		if (hintedImageType || !isTextFile(file)) {
-			setStatus(`File “${file.name}” is not supported. Use UTF-8 text, PNG, or JPEG.`, "err");
+		if (hintedMediaType || !isTextFile(file)) {
+			setStatus(`File “${file.name}” is not supported. Use UTF-8 text, PNG, JPEG, WebP, GIF, MP3, or MP4.`, "err");
 			return;
 		}
 		try {
@@ -276,8 +236,8 @@ async function loadFile(file) {
 	const storedByteLength = updateBytes();
 	contentEl.focus();
 	contentEl.setSelectionRange(0, 0);
-	const detail = actualImageType
-		? `${bytes.byteLength.toLocaleString()} image bytes; ${storedByteLength.toLocaleString()} data-URL bytes`
+	const detail = actualMediaType
+		? `${bytes.byteLength.toLocaleString()} media bytes; ${storedByteLength.toLocaleString()} data-URL bytes`
 		: `${storedByteLength.toLocaleString()} bytes`;
 	setStatus(`Loaded “${file.name}” (${detail}).`, "ok");
 }
@@ -328,14 +288,14 @@ contentEl.addEventListener("paste", (event) => {
 			.map((item) => item.kind === "file" ? item.getAsFile() : null)
 			.filter((file) => file !== null);
 	}
-	const images = files.filter((file) => imageTypeHint(file));
-	if (images.length === 0) return;
+	const mediaFiles = files.filter((file) => mediaTypeHint(file));
+	if (mediaFiles.length === 0) return;
 	event.preventDefault();
-	if (images.length !== 1 || files.length !== 1) {
-		setStatus("Paste one PNG or JPEG image at a time.", "err");
+	if (mediaFiles.length !== 1 || files.length !== 1) {
+		setStatus("Paste one media file at a time.", "err");
 		return;
 	}
-	void loadFile(images[0]);
+	void loadFile(mediaFiles[0]);
 });
 
 let nativeSha256Available = typeof globalThis.crypto?.subtle?.digest === "function";
@@ -379,6 +339,51 @@ function bytesToBase64(bytes) {
 	return btoa(parts.join(""));
 }
 
+function formatPowDuration(ms, extendedUnits = false) {
+	if (!Number.isFinite(ms) || ms < 0) return "estimating…";
+	const units = [
+		{ suffix: "s", ms: 1000 },
+		{ suffix: "m", ms: 60_000 },
+		{ suffix: "h", ms: 3_600_000 },
+		{ suffix: "d", ms: 86_400_000 },
+	];
+	if (extendedUnits) {
+		// Approximate durations, not calendar dates: seven-day weeks and 365-day years.
+		units.push({ suffix: "w", ms: 604_800_000 }, { suffix: "y", ms: 31_536_000_000 });
+	}
+	let index = 0;
+	while (index < units.length - 1 && ms >= units[index + 1].ms) index++;
+	// Promote values that round to the next unit (e.g. 59.99s becomes 1m).
+	if (index < units.length - 1 && Number((ms / units[index].ms).toPrecision(3)) >= units[index + 1].ms / units[index].ms) index++;
+	return `${(ms / units[index].ms).toPrecision(3)}${units[index].suffix}`;
+}
+
+function powP50TimeEstimate(expectedAttempts, attempts, elapsedMs) {
+	if (![expectedAttempts, attempts, elapsedMs].every((value) => Number.isFinite(value) && value > 0)) {
+		return "estimating…";
+	}
+	// Use aggregate observed throughput. This is a median search time, not an ETA.
+	const ms = expectedAttempts * (elapsedMs / attempts);
+	if (!Number.isFinite(ms)) return "estimating…";
+	return `~${formatPowDuration(ms, true)}`;
+}
+
+function powProgressText({ workerCount, implementations, difficulty, attempts, p50, elapsedMs, found = false }) {
+	const backend = [...implementations]
+		.map((name) => name === "Web Crypto" ? "WebCrypto" : name)
+		.join("/") || "an initialising backend";
+	const counts = [attempts.toLocaleString(), p50.toLocaleString()];
+	const times = [formatPowDuration(elapsedMs), powP50TimeEstimate(p50, attempts, elapsedMs)];
+	const countWidth = Math.max(...counts.map((value) => value.length));
+	const timeWidth = Math.max(...times.map((value) => value.length));
+	// The status element uses a monospace font and preserves whitespace.
+	const row = (index) => `${counts[index].padStart(countWidth)} attempts | ${times[index].padStart(timeWidth)}`;
+	return `${found ? "Proof found" : "Searching SHA-256 proof"} with ${workerCount} workers using ${backend}. ` +
+		`${difficulty} zero bits required.${found ? " Uploading…" : ""}\n` +
+		`${row(0)} elapsed\n` +
+		`${row(1)} (required for 50% chance of finding proof)`;
+}
+
 /**
  * Split the nonce range across a worker pool. Worker i searches
  * start + i, start + i + workerCount, ... so no two workers overlap.
@@ -396,7 +401,6 @@ async function solvePow(challenge) {
 	}
 
 	const p50 = expected_attempts_p50 ?? Math.ceil(Math.LN2 * 2 ** difficulty);
-	const average = 2 ** difficulty;
 	const logicalCores = navigator.hardwareConcurrency || 4;
 	const workerCount = Math.max(2, Math.min(logicalCores, 16));
 	const attemptsByWorker = new Array(workerCount).fill(0);
@@ -408,11 +412,7 @@ async function solvePow(challenge) {
 	else random[0] = Math.floor(Math.random() * 0x1_0000_0000);
 	const rangeStart = random[0];
 
-	setStatus(
-		`Searching SHA-256 proof with ${workerCount} workers (${difficulty} zero bits)…\n` +
-			`~${p50.toLocaleString()} attempts for a 50% chance ` +
-			`(${average.toLocaleString()} average).`,
-	);
+	setStatus(powProgressText({ workerCount, implementations, difficulty, attempts: 0, p50, elapsedMs: 0 }));
 
 	return new Promise((resolve, reject) => {
 		let settled = false;
@@ -428,13 +428,8 @@ async function solvePow(challenge) {
 		};
 		const updateProgress = () => {
 			const attempts = totalAttempts();
-			const ms = Math.round(performance.now() - t0);
-			const backend = implementations.size > 0 ? ` · ${[...implementations].join("/")}` : "";
-			setStatus(
-				`Searching SHA-256 proof… ${attempts.toLocaleString()} attempts ` +
-					`(p50≈${p50.toLocaleString()}), ${(ms / 1000).toFixed(1)}s elapsed\n` +
-					`${workerCount} workers${backend} · need ${difficulty} leading zero bits`,
-			);
+			const ms = performance.now() - t0;
+			setStatus(powProgressText({ workerCount, implementations, difficulty, attempts, p50, elapsedMs: ms }));
 			if (attempts > p50 * 64) fail(new Error("proof search exceeded safety limit; retry publish"));
 		};
 
@@ -458,13 +453,11 @@ async function solvePow(challenge) {
 					if (message?.type === "result") {
 						attemptsByWorker[message.workerId] = message.attempts;
 						const attempts = totalAttempts();
-						const ms = Math.round(performance.now() - t0);
+						const elapsedMs = performance.now() - t0;
+						const ms = Math.round(elapsedMs);
 						settled = true;
 						stopWorkers();
-						setStatus(
-							`Proof found after ~${attempts.toLocaleString()} attempts across ` +
-								`${workerCount} workers in ${(ms / 1000).toFixed(1)}s. Uploading…`,
-						);
+						setStatus(powProgressText({ workerCount, implementations, difficulty, attempts, p50, elapsedMs, found: true }));
 						resolve({
 							solution: message.solution,
 							pow_hash: message.powHash,
@@ -518,14 +511,14 @@ async function publish() {
 			return;
 		}
 	}
-	if ((contentType === "png" || contentType === "jpeg") && imageDataUrlType(content) !== contentType) {
-		setStatus(`Image content must be a valid base64 ${contentType.toUpperCase()} data URL.`, "err");
+	if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(contentType) && mediaDataUrlType(content) !== contentType) {
+		setStatus(`Media content must be a valid base64 ${contentType.toUpperCase()} data URL.`, "err");
 		return;
 	}
 
 	setBusy(true);
 	try {
-		if (contentType === "png" || contentType === "jpeg") {
+		if (["png", "jpeg", "webp", "gif"].includes(contentType)) {
 			setStatus(`Validating ${contentType.toUpperCase()} image…`);
 			await verifyDecodableImage(content.trim());
 		}

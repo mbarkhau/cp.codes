@@ -1,5 +1,7 @@
 #!/usr/bin/env -S uv run --script
-"""Publish UTF-8 content to cp.codes using its signed SHA-256 PoW API.
+"""Publish text or binary files to cp.codes using its signed SHA-256 PoW API.
+
+Binary files are stored as base64 data URLs; images and MP3/MP4 media play in the viewer.
 
 Requires Python 3.9+; uses only the standard library.
 """
@@ -20,10 +22,20 @@ from urllib.request import Request, urlopen
 
 
 CONTENT_TYPES = (
-    "plaintext", "url", "markdown", "png", "jpeg", "javascript", "typescript",
+    "plaintext", "url", "markdown", "png", "jpeg", "webp", "gif", "mp3", "mp4", "javascript", "typescript",
     "python", "java", "json", "html", "css", "shell", "sql", "yaml", "xml",
     "c", "cpp", "csharp", "go", "rust", "ruby", "php",
 )
+
+
+MEDIA_MIME_TYPES = {
+    "png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp", "gif": "image/gif",
+    "mp3": "audio/mpeg", "mp4": "video/mp4",
+}
+MP4_BRANDS = {
+    b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"iso7", b"iso8", b"iso9",
+    b"mp41", b"mp42", b"avc1", b"M4V ", b"M4A ", b"MSNV", b"dash", b"msdh", b"msix",
+}
 
 
 class ApiError(RuntimeError):
@@ -109,6 +121,77 @@ def solve_pow(challenge, timeout):
         counter += 1
 
 
+def image_type(content):
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if len(content) >= 4 and content.startswith(b"\xff\xd8\xff") and content.endswith(b"\xff\xd9"):
+        return "jpeg"
+    if (len(content) >= 20 and content[:4] == b"RIFF" and content[8:12] == b"WEBP"
+            and content[12:16] in (b"VP8 ", b"VP8L", b"VP8X")
+            and int.from_bytes(content[4:8], "little") + 8 == len(content)):
+        return "webp"
+    if len(content) >= 14 and content[:6] in (b"GIF87a", b"GIF89a") and content.endswith(b";"):
+        return "gif"
+    return None
+
+
+def media_type(content):
+    detected_image = image_type(content)
+    if detected_image:
+        return detected_image
+    if (len(content) >= 10 and content[:3] == b"ID3" and content[3] in (2, 3, 4)
+            and content[4] != 0xff and all(byte < 0x80 for byte in content[6:10])):
+        return "mp3"
+    if (len(content) >= 4 and content[0] == 0xff and content[1] & 0xe0 == 0xe0
+            and content[1] & 0x18 != 0x08 and content[1] & 0x06 == 0x02
+            and content[2] & 0xf0 != 0xf0 and content[2] & 0x0c != 0x0c):
+        return "mp3"
+    if len(content) >= 16 and content[4:8] == b"ftyp":
+        size = int.from_bytes(content[:4], "big")
+        if 16 <= size <= len(content) and size % 4 == 0 and content[8:12] in MP4_BRANDS:
+            return "mp4"
+    return None
+
+
+def prepare_content(content, content_type="plaintext", force_binary=False):
+    """Return the UTF-8 body and resolved type before hashing or compression."""
+    if not content:
+        raise ValueError("content must be non-empty")
+    detected_media = media_type(content)
+    if detected_media:
+        if content_type not in ("plaintext", detected_media):
+            raise ValueError(f"binary media is {detected_media}, not {content_type}")
+        prefix = f"data:{MEDIA_MIME_TYPES[detected_media]};base64,".encode("ascii")
+        return prefix + base64.b64encode(content), detected_media
+
+    try:
+        text = content.decode("utf-8", errors="strict")
+        binary = b"\x00" in content or sum(
+            byte < 0x20 and byte not in (9, 10, 13) or byte == 0x7f
+            for byte in content[:4096]
+        ) > 8
+    except UnicodeDecodeError:
+        text = None
+        binary = True
+
+    if binary or force_binary:
+        if content_type != "plaintext":
+            raise ValueError("unsupported binary formats require --content-type plaintext")
+        return b"data:application/octet-stream;base64," + base64.b64encode(content), "plaintext"
+
+    if content_type in MEDIA_MIME_TYPES:
+        match = re.fullmatch(r"data:(image/(?:png|jpeg|webp|gif)|audio/mpeg|video/mp4);base64,([A-Za-z0-9+/]+={0,2})", text.strip())
+        valid = False
+        if match and match[1] == MEDIA_MIME_TYPES[content_type]:
+            try:
+                valid = media_type(base64.b64decode(match[2], validate=True)) == content_type
+            except ValueError:
+                pass
+        if not valid:
+            raise ValueError(f"content is not signature-checked {content_type.upper()} media or a data URL")
+    return content, content_type
+
+
 def publish(args, content):
     content_hash = hashlib.sha256(content).hexdigest()
     payload = {
@@ -118,8 +201,8 @@ def publish(args, content):
         "description": args.description,
         "filename": args.filename,
         "unlisted": args.unlisted,
-        "consent": args.consent,
-        "consent_moderation": args.consent_moderation,
+        "consent": args.consent_all,
+        "consent_moderation": args.consent_all,
     }
     for attempt in range(2):
         challenge = post_json(args.base_url, "/api/challenge", {
@@ -148,15 +231,15 @@ def positive_seconds(value):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("file", nargs="?", default="-", help="UTF-8 file to paste (default: stdin; '-' also means stdin)")
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("file", nargs="?", default="-", help="text or binary file to paste (default: stdin; '-' also means stdin)")
     parser.add_argument("--base-url", default="https://cp.codes", help="service origin (default: https://cp.codes)")
-    parser.add_argument("--content-type", choices=CONTENT_TYPES, default="plaintext", help="resolved content type (default: plaintext)")
+    parser.add_argument("--content-type", choices=CONTENT_TYPES, default="plaintext", help="resolved content type (default: plaintext; supported binary media detected automatically)")
+    parser.add_argument("--binary", action="store_true", help="force base64 data-URL encoding, even for valid UTF-8 input")
     parser.add_argument("--description", default="", help="optional public description")
     parser.add_argument("--filename", help="public filename (default: input file's basename)")
     parser.add_argument("--unlisted", action="store_true", help="omit from recent uploads; NOT private")
-    parser.add_argument("--consent", action="store_true", required=True, help="consent to collecting and storing your IP and location with this upload")
-    parser.add_argument("--consent-moderation", action="store_true", required=True, help="consent to sending paste text, description, and filename to DefAPI/TypeSafe for automated moderation")
+    parser.add_argument("--consent-all", action="store_true", required=True, help="consent to collecting and storing your IP and location and sending paste text, description, and filename to DefAPI/TypeSafe for automated moderation")
     parser.add_argument("--json", action="store_true", help="print full API response, including the deletion token")
     parser.add_argument("--timeout", type=positive_seconds, default=60, help="HTTP timeout in seconds (default: 60)")
     parser.add_argument("--pow-timeout", type=positive_seconds, default=120, help="proof search timeout in seconds per challenge (default: 120)")
@@ -167,9 +250,10 @@ def main(argv=None):
         parser.error("--base-url must be an HTTP(S) origin, e.g. http://localhost:8787")
     try:
         content = sys.stdin.buffer.read() if args.file == "-" else Path(args.file).read_bytes()
-        content.decode("utf-8", errors="strict")
-        if not content or b"\x00" in content:
-            raise ValueError("content must be non-empty UTF-8 text without NUL bytes")
+        original_length = len(content)
+        content, args.content_type = prepare_content(content, args.content_type, args.binary)
+        if len(content) != original_length:
+            print(f"Encoded {original_length:,} binary bytes as {len(content):,} data-URL bytes.", file=sys.stderr)
         if args.filename is None and args.file != "-":
             args.filename = Path(args.file).name
         result = publish(args, content)

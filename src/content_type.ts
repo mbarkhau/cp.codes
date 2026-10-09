@@ -4,6 +4,10 @@ export const CONTENT_TYPES = [
 	"markdown",
 	"png",
 	"jpeg",
+	"webp",
+	"gif",
+	"mp3",
+	"mp4",
 	"javascript",
 	"typescript",
 	"python",
@@ -31,9 +35,13 @@ export const CONTENT_TYPE_FILES: Record<ContentType, { extension: string; mediaT
 	plaintext: { extension: "txt", mediaType: "text/plain" },
 	url: { extension: "url", mediaType: "text/uri-list" },
 	markdown: { extension: "md", mediaType: "text/markdown" },
-	// Image paste bodies are UTF-8 data URLs; raw routes return that URL as text.
+	// Media paste bodies are UTF-8 data URLs; raw routes return that URL as text.
 	png: { extension: "png", mediaType: "text/plain" },
 	jpeg: { extension: "jpg", mediaType: "text/plain" },
+	webp: { extension: "webp", mediaType: "text/plain" },
+	gif: { extension: "gif", mediaType: "text/plain" },
+	mp3: { extension: "mp3", mediaType: "text/plain" },
+	mp4: { extension: "mp4", mediaType: "text/plain" },
 	javascript: { extension: "js", mediaType: "text/javascript" },
 	typescript: { extension: "ts", mediaType: "text/typescript" },
 	python: { extension: "py", mediaType: "text/x-python" },
@@ -110,6 +118,10 @@ export const CONTENT_TYPE_LABELS: Record<ContentTypeChoice, string> = {
 	markdown: "Markdown",
 	png: "PNG image",
 	jpeg: "JPEG image",
+	webp: "WebP image",
+	gif: "GIF image",
+	mp3: "MP3 audio",
+	mp4: "MP4 video",
 	javascript: "JavaScript",
 	typescript: "TypeScript",
 	python: "Python",
@@ -164,6 +176,10 @@ export function detectContentType(content: string): ContentType {
 	const text = content.trim();
 	if (/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "png";
 	if (/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "jpeg";
+	if (/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "webp";
+	if (/^data:image\/gif;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "gif";
+	if (/^data:audio\/mpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "mp3";
+	if (/^data:video\/mp4;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "mp4";
 	if (parseHttpUrl(text)) return "url";
 	if (!text) return "plaintext";
 

@@ -97,8 +97,13 @@ Deno.test("missing key is an audited error and hides the upload without calling 
 	assertEquals(initialModeration(assessment).visibility, "hidden");
 });
 
-Deno.test("images (including a misleading plaintext content_type) need human review", async () => {
-	for (const [contentType, content] of [["png", "data:image/png;base64,x"], ["jpeg", "image"], ["plaintext", "data:image/png;base64,x"]]) {
+Deno.test("media (including a misleading plaintext content_type) needs human review", async () => {
+	for (const [contentType, content] of [
+		["png", "data:image/png;base64,x"], ["jpeg", "image"], ["webp", "image"], ["gif", "image"],
+		["mp3", "audio"], ["mp4", "video"], ["plaintext", "data:image/png;base64,x"],
+		["plaintext", "data:image/webp;base64,x"], ["plaintext", "data:image/gif;base64,x"],
+		["plaintext", "data:audio/mpeg;base64,x"], ["plaintext", "data:video/mp4;base64,x"],
+	]) {
 		const assessment = await assessPaste({ ...metadata, content_type: contentType }, content, KEY, {
 			fetchImpl: () => { throw new Error("must not call"); },
 		});

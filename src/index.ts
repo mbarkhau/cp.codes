@@ -42,14 +42,15 @@ import * as paste from "./paste";
 import * as ui from "./ui";
 import * as contentType from "./content_type";
 import * as admin from "./admin";
+import { getPowDifficultyState } from "./pow_settings";
 import { assessPaste, initialModeration } from "./jev.mjs";
 
 export { MonoClock } from "./mono_clock";
 export { PowKey } from "./pow";
 export { PasteIndex } from "./paste";
+export { StaffSession } from "./session";
 
 const CP_ID_RE = /^CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10})$/;
-const POW_RATE_WINDOW_MS = pow.POW_DEFAULTS.rateWindowSeconds * 1000;
 const MAX_REDIRECT_URL_BYTES = 64 * 1024;
 const MAX_REDIRECT_STORED_BYTES = 256 * 1024;
 
@@ -224,7 +225,8 @@ async function mintId(
 function headersToObject(headers: Headers): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const [key, value] of headers) {
-		out[key] = key in out ? `${out[key]}, ${value}` : value;
+		out[key] = ["authorization", "cookie", "proxy-authorization"].includes(key.toLowerCase())
+			? "[redacted]" : key in out ? `${out[key]}, ${value}` : value;
 	}
 	return out;
 }
@@ -300,18 +302,12 @@ async function handleChallenge(request: Request, env: Env): Promise<Response> {
 		return error("byte_length must be a positive safe integer");
 	}
 
-	const config = pow.powConfigFromEnv(env);
-	const windowStart = Date.now() - POW_RATE_WINDOW_MS;
-	const recentPasteCount = await paste.countPastesCreatedSince(env, windowStart);
-	const rateAdjustedDifficulty = pow.difficultyForRecentPastes(
-		config.difficultyBits,
-		recentPasteCount,
-	);
+	const state = await getPowDifficultyState(env);
 	// SHA-256 has only 256 output bits. At that point a valid proof requires an
 	// all-zero digest, so larger pastes need no artificial byte limit.
 	const difficulty = Math.min(
 		pow.MAX_POW_DIFFICULTY_BITS,
-		rateAdjustedDifficulty + paste.pasteSizeDifficultyBits(byteLength),
+		state.current_difficulty_bits + paste.pasteSizeDifficultyBits(byteLength),
 	);
 	const challenge = await pow.issueChallenge(env, {
 		contentHash,
@@ -550,15 +546,17 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 
 async function unavailablePasteResponse(
 	request: Request,
+	env: Env,
 	moderation: paste.PasteModeration,
 	mode: "html" | "raw" | "json",
 ): Promise<Response | null> {
 	if (moderation.visibility === "visible") return null;
 	// Staff can still inspect hidden content while reviewing it. Deleted bodies
 	// are unavailable to everyone, including staff.
-	if (moderation.visibility === "hidden" && await admin.authenticateStaff(request)) return null;
-	if (mode === "html") return ui.notFoundPage("This paste is not available", request.headers.has("authorization"));
-	return error("paste not found", 404);
+	const staff = await admin.authenticateStaff(request, env);
+	if (moderation.visibility === "hidden" && staff) return null;
+	if (mode === "html") return ui.notFoundPage("This paste is not available", Boolean(staff));
+	return json({ error: "paste not found" }, 404, { "cache-control": "no-store, private", vary: "Cookie, Authorization" });
 }
 
 async function redirectTargetFromPaste(object: paste.StoredPasteObject): Promise<URL> {
@@ -619,12 +617,12 @@ async function handleGetPaste(
 		parts = cpCode.parseCpCode(id);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : "invalid id";
-		if (mode === "html") return ui.notFoundPage(message, request.headers.has("authorization"));
+		if (mode === "html") return ui.notFoundPage(message, Boolean(await admin.authenticateStaff(request, env)));
 		return error(message, 400);
 	}
 
 	const moderation = await paste.getPasteModeration(env, id);
-	const unavailable = await unavailablePasteResponse(request, moderation, mode);
+	const unavailable = await unavailablePasteResponse(request, env, moderation, mode);
 	if (unavailable) return unavailable;
 
 	const object = mode === "raw" && request.method === "GET"
@@ -632,7 +630,7 @@ async function handleGetPaste(
 		: null;
 	const stored = object?.metadata ?? await paste.getPasteMetadata(env, id);
 	if (!stored) {
-		if (mode === "html") return ui.notFoundPage(`No paste for ${id}`, request.headers.has("authorization"));
+		if (mode === "html") return ui.notFoundPage(`No paste for ${id}`, Boolean(await admin.authenticateStaff(request, env)));
 		return error("paste not found", 404);
 	}
 
@@ -651,7 +649,7 @@ async function handleGetPaste(
 	) {
 		const redirectObject = object ?? await paste.getPasteObject(env, id);
 		if (!redirectObject) {
-			if (mode === "html") return ui.notFoundPage(`No paste for ${id}`, request.headers.has("authorization"));
+			if (mode === "html") return ui.notFoundPage(`No paste for ${id}`, Boolean(await admin.authenticateStaff(request, env)));
 			return error("paste not found", 404);
 		}
 		let target: URL;
@@ -729,7 +727,7 @@ async function handleGetPaste(
 		}, 200, { "cache-control": "no-store" });
 	}
 
-	return ui.viewPage(stored, hitCount, request.headers.has("authorization"));
+	return ui.viewPage(stored, hitCount, Boolean(await admin.authenticateStaff(request, env)), moderation.visibility === "hidden");
 }
 
 /** Serve the exact R2 representation for client-side decompression. */
@@ -740,7 +738,7 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 		return error(err instanceof Error ? err.message : "invalid id", 400);
 	}
 	const moderation = await paste.getPasteModeration(env, id);
-	const unavailable = await unavailablePasteResponse(request, moderation, "raw");
+	const unavailable = await unavailablePasteResponse(request, env, moderation, "raw");
 	if (unavailable) return unavailable;
 	const object = request.method === "GET" ? await paste.getPasteObject(env, id) : null;
 	const stored = object?.metadata ?? await paste.getPasteMetadata(env, id);
@@ -877,12 +875,17 @@ export default {
 
 		if (path === "/debug") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return json(debugPayload(request, env, ctx, url, path));
+			return json(debugPayload(request, env, ctx, url, path), 200, { "cache-control": "no-store, private", vary: "Cookie, Authorization" });
 		}
+
+		if (path === "/login") return admin.handleLogin(request, env);
+		if (path === "/logout") return admin.handleLogout(request, env);
 
 		if (
 			path === "/admin/reports" ||
 			path === "/admin/users" ||
+			path === "/admin/pow" ||
+			path === "/api/admin/pow" ||
 			path === "/admin/access-log" ||
 			path === "/admin/pastes" ||
 			path === "/admin/api" ||
@@ -934,28 +937,28 @@ export default {
 
 		if (path === "/" || path === "/index.html") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.newPage(request.headers.has("authorization"));
+			return ui.newPage(Boolean(await admin.authenticateStaff(request, env)));
 		}
 
 		if (path === "/about") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.aboutPage(request.headers.has("authorization"));
+			return ui.aboutPage(Boolean(await admin.authenticateStaff(request, env)));
 		}
 
 		if (path === "/pastes") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
 			const recent = await paste.listRecentPastes(env);
-			return ui.pastesPage(recent, request.headers.has("authorization"));
+			return ui.pastesPage(recent, Boolean(await admin.authenticateStaff(request, env)));
 		}
 
 		if (path === "/client-info") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.clientInfoPage(uploadMetadataFromRequest(request), request.headers.has("authorization"));
+			return ui.clientInfoPage(uploadMetadataFromRequest(request), Boolean(await admin.authenticateStaff(request, env)));
 		}
 
 		if (path === "/new") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.newPage(request.headers.has("authorization"));
+			return ui.newPage(Boolean(await admin.authenticateStaff(request, env)));
 		}
 
 		// Static client bundle
@@ -996,7 +999,7 @@ export default {
 			if (assetResp.status !== 404) return assetResp;
 		}
 
-		if (wantsHtml(request)) return ui.notFoundPage("Not found", request.headers.has("authorization"));
+		if (wantsHtml(request)) return ui.notFoundPage("Not found", Boolean(await admin.authenticateStaff(request, env)));
 		return error("Not Found", 404);
 	},
 } satisfies ExportedHandler<Env>;

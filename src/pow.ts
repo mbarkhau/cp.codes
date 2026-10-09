@@ -73,6 +73,16 @@ export type PowConfig = {
 	difficultyBits: number;
 };
 
+export type PowDifficultySettings = {
+	difficultyBits: number | null;
+	updatedAt: string | null;
+	updatedBy: string | null;
+};
+
+export function isDifficultyBits(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_POW_DIFFICULTY_BITS;
+}
+
 export function powConfigFromEnv(env: Env): PowConfig {
 	return {
 		difficultyBits: parseNonNegInt(env.POW_DIFFICULTY_BITS, POW_DEFAULTS.difficultyBits),
@@ -387,7 +397,7 @@ export async function verifyChallenge(env: Env, value: unknown): Promise<PublicC
 }
 
 /**
- * Stores one automatically generated signing key and successful redemptions.
+ * Stores one automatically generated signing key, difficulty settings, and successful redemptions.
  * Issuance never stores challenge records; first access only initializes the key.
  */
 export class PowKey extends DurableObject<Env> {
@@ -399,6 +409,12 @@ export class PowKey extends DurableObject<Env> {
 			CREATE TABLE IF NOT EXISTS pow_key (
 				name TEXT PRIMARY KEY,
 				key_hex TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS pow_settings (
+				name TEXT PRIMARY KEY,
+				difficulty_bits INTEGER,
+				updated_at TEXT NOT NULL,
+				updated_by TEXT NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS pow_redemptions (
 				challenge_id TEXT PRIMARY KEY,
@@ -428,6 +444,29 @@ export class PowKey extends DurableObject<Env> {
 
 	getKeyHex(): string {
 		return this.#keyHex;
+	}
+
+	getDifficultySettings(): PowDifficultySettings {
+		const row = this.ctx.storage.sql.exec<{
+			difficulty_bits: number | null; updated_at: string; updated_by: string;
+		}>("SELECT difficulty_bits, updated_at, updated_by FROM pow_settings WHERE name = ?", "minimum")
+			.toArray()[0];
+		return {
+			difficultyBits: row?.difficulty_bits ?? null,
+			updatedAt: row?.updated_at ?? null,
+			updatedBy: row?.updated_by ?? null,
+		};
+	}
+
+	setDifficultySettings(difficultyBits: number | null, updatedBy: string): void {
+		if (difficultyBits !== null && !isDifficultyBits(difficultyBits)) throw new Error("difficulty out of range");
+		if (typeof updatedBy !== "string" || !updatedBy) throw new Error("staff username required");
+		this.ctx.storage.sql.exec(
+			`INSERT INTO pow_settings (name, difficulty_bits, updated_at, updated_by) VALUES (?, ?, ?, ?)
+			 ON CONFLICT(name) DO UPDATE SET difficulty_bits = excluded.difficulty_bits,
+			 updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+			"minimum", difficultyBits, new Date().toISOString(), updatedBy,
+		);
 	}
 
 	/** Atomically claim a successfully verified challenge and reject replays. */

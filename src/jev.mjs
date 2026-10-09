@@ -149,8 +149,8 @@ export async function assessPaste(metadata, content, key, options = {}) {
 		status: "error", model: MODEL, prompt_version: PROMPT_VERSION, assessed_at: new Date().toISOString(),
 		category: null, probabilities: null, confidence: null, usage: null, task_id: null, consumed: null, detail: null,
 	};
-	if (metadata.content_type === "png" || metadata.content_type === "jpeg" || /^data:image\//i.test(content.trimStart())) {
-		return { ...base, status: "unsupported", detail: "Jev's documented API does not support image moderation" };
+	if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(metadata.content_type) || /^data:(?:image|audio|video)\//i.test(content.trimStart())) {
+		return { ...base, status: "unsupported", detail: "Jev's documented API does not support image, audio, or video moderation" };
 	}
 	if (metadata.byte_length > DEFAULT_MAX_BYTES) {
 		return { ...base, status: "unsupported", detail: `Paste exceeds the ${DEFAULT_MAX_BYTES}-byte single-request limit` };

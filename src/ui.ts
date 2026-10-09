@@ -90,6 +90,9 @@ header { display: flex; align-items: center; min-height: 2.5rem; margin-bottom: 
 .site-nav .staff-nav-start { margin-left: 0.25rem; padding-left: 1.25rem; border-left: 1px solid var(--border); }
 .site-nav a:hover, .site-nav a[aria-current="page"] { color: var(--fg); }
 .site-nav a[aria-current="page"] { font-weight: 650; }
+.site-nav .nav-logout { margin: 0; display: inline; }
+.site-nav .nav-logout button { font: inherit; color: var(--muted); background: transparent; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+.site-nav .nav-logout button:hover { color: var(--fg); filter: none; }
 .theme-toggle {
   display: inline-grid;
   place-items: center;
@@ -141,15 +144,15 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 textarea, input, select, button {
   font: inherit;
 }
-select, input[type="text"], input[type="email"] {
+select, input[type="text"], input[type="email"], input[type="password"] {
   background: var(--surface);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 0.55rem 0.7rem;
 }
-input[type="text"], input[type="email"] { width: 100%; }
-input[type="text"]:focus, input[type="email"]:focus, textarea:focus, select:focus {
+input[type="text"], input[type="email"], input[type="password"] { width: 100%; }
+input[type="text"]:focus, input[type="email"]:focus, input[type="password"]:focus, textarea:focus, select:focus {
   outline: 2px solid color-mix(in srgb, var(--focus) 75%, transparent);
   outline-offset: 1px;
   border-color: var(--focus);
@@ -416,6 +419,8 @@ pre.paste {
 .url-activate input { accent-color: var(--accent); }
 .paste-image-wrap { padding: 1rem; text-align: center; background: var(--surface); }
 .paste-image { display: block; max-width: 100%; max-height: 75vh; margin: 0 auto; }
+.paste-media-wrap { padding: 1rem; background: var(--surface); }
+.paste-media { display: block; width: 100%; max-height: 75vh; margin: 0 auto; }
 @media (max-width: 720px) {
   .paste-details { grid-template-columns: 1fr; }
   .paste-qr { margin: 0 auto; justify-self: center; }
@@ -518,9 +523,11 @@ function navigation(currentPath: string, showStaffNavigation: boolean): string {
 		`<a${className ? ` class="${className}"` : ""} href="${href}"${currentPath === href ? ` aria-current="page"` : ""}>${label}</a>`;
 	const staffLinks = showStaffNavigation
 		? `${link("/admin/pastes", "moderation", "staff-nav-start")}
+        ${link("/admin/pow", "proof of work")}
         ${link("/admin/users", "users")}
-        ${link("/admin/access-log", "access log")}`
-		: "";
+        ${link("/admin/access-log", "access log")}
+        <form class="nav-logout" method="post" action="/logout"><button type="submit">log out</button></form>`
+		: link("/login", "staff login");
 	return `<nav class="site-nav" aria-label="Primary navigation">
         ${link("/", "new")}
         ${link("/pastes", "pastes")}
@@ -650,7 +657,7 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
       <button class="file-button" type="button" id="file-button" aria-controls="file-input">Upload file</button>
     </div>
   </div>
-  <textarea id="content" placeholder="Paste text, code, Markdown, a URL, or drop text/PNG/JPEG…" spellcheck="false"></textarea>
+  <textarea id="content" placeholder="Paste text, code, Markdown, a URL, or drop text, PNG/JPEG/WebP/GIF, MP3, or MP4…" spellcheck="false"></textarea>
   <div class="row-publish">
     <span class="meta"><span id="bytes">0 bytes</span> · <span id="size-difficulty">Base-size PoW</span> · <span id="detected-type">Detected: Plaintext</span></span>
     <div class="type-control">
@@ -664,7 +671,7 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
   <div class="consent-publish">
     <label class="check-control"><input type="checkbox" id="listed" checked /><span>Public listing. (Only affects visibility in cp.codes/pastes listing. Visible pastes are publicly accessible via their URL regardless of listing status.)</span></label>
     <label class="check-control consent-control"><input type="checkbox" id="consent" /><span>I consent to the collection and storage of <a href="/client-info">my IP and location data</a>.</span></label>
-    <label class="check-control consent-control"><input type="checkbox" id="consent-moderation" /><span>I consent to sending paste text, description, and filename to the service providers DefAPI/TypeSafe for automated moderation. Flagged, uncertain, or unsupported uploads are hidden for staff review.</span></label>
+    <label class="check-control consent-control"><input type="checkbox" id="consent-moderation" /><span>I consent to sending paste data to <a href="/about#service-providers">service providers</a> for automated moderation. Your paste may remain private until moderation is complete.</span></label>
     <button type="button" id="publish" disabled>Publish</button>
   </div>
   <div class="progress" id="progress" aria-hidden="true"><i></i></div>
@@ -677,10 +684,18 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
   <ul>
     <li>No login. Uploads need a <strong>SHA-256</strong> search PoW: base difficulty ${d} (~${p50.toLocaleString()} attempts for a 50% chance; ${average.toLocaleString()} average). It rises by one bit for each paste from the 15th onward in the previous 10 minutes.</li>
     <li>Listed pastes get short version 0 ids; unlisted pastes stay out of recent uploads and use longer version 2 ids.</li>
-    <li>No application size cap. Base difficulty covers ${DEFAULT_PASTE_BYTES.toLocaleString()} bytes; each additional started ${PASTE_DIFFICULTY_STEP_BYTES.toLocaleString()}-byte block adds one bit, up to SHA-256's 256-bit maximum. UTF-8 text plus PNG/JPEG images encoded as base64 data URLs; browsers gzip content before upload and decompress it when viewed.</li>
-    <li>Every upload is assessed for spam, phishing, and CSAM before publication. Paste text and public descriptive metadata are sent to DefAPI/TypeSafe. Images, over-context pastes, uncertain results, and assessment failures are held for staff review. Automated classification is not a verification of legality.</li>
+    <li>No application size cap. Base difficulty covers ${DEFAULT_PASTE_BYTES.toLocaleString()} bytes; each additional started ${PASTE_DIFFICULTY_STEP_BYTES.toLocaleString()}-byte block adds one bit, up to SHA-256's 256-bit maximum. UTF-8 text plus PNG/JPEG/WebP/GIF images and MP3/MP4 media encoded as base64 data URLs; browsers gzip content before upload and decompress it when viewed.</li>
+    <li>Every upload is assessed for spam, phishing, and CSAM before publication. Paste text and public descriptive metadata are sent to the moderation service providers listed below. Images, audio, video, over-context pastes, uncertain results, and assessment failures are held for staff review. Automated classification is not a verification of legality.</li>
     <li>Press <strong>Ctrl/⌘+P</strong> to detect and publish.</li>
   </ul>
+  <h2 id="service-providers">Service providers</h2>
+  <ul>
+    <li><strong>Cloudflare</strong> hosts cp.codes and stores pastes and upload metadata, including IP and location data.</li>
+    <li><strong>DefAPI</strong> provides the API used for automated moderation. Paste text, description, filename, and content type are sent to this service.</li>
+    <li><strong>TypeSafe</strong> supplies the Jev model used for automated moderation through DefAPI.</li>
+    <li><strong>jsDelivr</strong> serves browser libraries for Markdown rendering and fallback proof-of-work hashing. When loading these libraries, your browser sends IP and request metadata to the CDN, not paste contents.</li>
+  </ul>
+  <p>Private IP/location metadata and proof-of-work details are not sent to the automated moderation service.</p>
 </section>`;
 	const body = page === "new"
 		? newSection
@@ -693,14 +708,14 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
 		new: "New paste — cp.codes",
 	};
 	const script = page === "new"
-		? `<script type="module" src="/app.js?v=13"></script>`
+		? `<script type="module" src="/app.js?v=21"></script>`
 		: undefined;
 	const html = layout(titles[page], body, script, page, { showStaffNavigation });
 	return new Response(html, {
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"cache-control": "no-store",
-			vary: "Authorization",
+			"cache-control": "no-store, private",
+			vary: "Cookie, Authorization",
 		},
 	});
 }
@@ -734,8 +749,8 @@ ${rows}
 	return new Response(layout("Client info — cp.codes", body, undefined, "client-info", { showStaffNavigation }), {
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"cache-control": "no-store",
-			vary: "Authorization",
+			"cache-control": "no-store, private",
+			vary: "Cookie, Authorization",
 		},
 	});
 }
@@ -863,15 +878,15 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
 	const html = layout(
 		`cp.codes/${paste.id}`,
 		body,
-		`<script type="module" src="/view.js?v=11"></script>`,
+		`<script type="module" src="/view.js?v=15"></script>`,
 		paste.id,
 		{ showStaffNavigation },
 	);
 	return new Response(html, {
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"cache-control": "no-store",
-			vary: "Authorization",
+			"cache-control": "no-store, private",
+			vary: "Cookie, Authorization",
 		},
 	});
 }
@@ -888,8 +903,8 @@ export function notFoundPage(message = "Not found", showStaffNavigation = false)
 		status: 404,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"cache-control": "no-store",
-			vary: "Authorization",
+			"cache-control": "no-store, private",
+			vary: "Cookie, Authorization",
 		},
 	});
 }

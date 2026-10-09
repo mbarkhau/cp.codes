@@ -2,6 +2,8 @@
  * Paste view page: fetch/decompress/render content, deletion controls, and QR.
  */
 
+import { MEDIA_MIME_TYPES, mediaTypeFromBytes } from "./media.js?v=1";
+
 const PASTE_CACHE_KEY = "cp.codes.paste.v1";
 const PASTE_CACHE_MAX_ENTRIES = 10;
 const QR_DISPLAY_SCALE = 6;
@@ -119,29 +121,35 @@ function renderUrl(content) {
 	return gate;
 }
 
-async function renderImage(content, contentType) {
-	const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(content.trim());
-	if (!match || match[1] !== contentType || match[2].length % 4 !== 0) {
-		throw new Error(`Invalid ${contentType.toUpperCase()} image data URL`);
+async function renderMedia(content, contentType) {
+	const match = /^data:(image\/(?:png|jpeg|webp|gif)|audio\/mpeg|video\/mp4);base64,([A-Za-z0-9+/]+={0,2})$/.exec(content.trim());
+	const kind = contentType === "mp3" || contentType === "mp4" ? "media" : "image";
+	if (!match || match[1] !== MEDIA_MIME_TYPES[contentType] || match[2].length % 4 !== 0) {
+		throw new Error(`Invalid ${contentType.toUpperCase()} ${kind} data URL`);
 	}
 	let binary;
 	try {
 		binary = atob(match[2]);
 	} catch {
-		throw new Error(`Invalid ${contentType.toUpperCase()} image encoding`);
+		throw new Error(`Invalid ${contentType.toUpperCase()} ${kind} encoding`);
 	}
-	const isPng = binary.length >= 8 &&
-		[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-			.every((value, index) => binary.charCodeAt(index) === value);
-	const isJpeg = binary.length >= 4 &&
-		binary.charCodeAt(0) === 0xff && binary.charCodeAt(1) === 0xd8 &&
-		binary.charCodeAt(2) === 0xff &&
-		binary.charCodeAt(binary.length - 2) === 0xff &&
-		binary.charCodeAt(binary.length - 1) === 0xd9;
-	if ((contentType === "png" && !isPng) || (contentType === "jpeg" && !isJpeg)) {
-		throw new Error(`Image bytes are not valid ${contentType.toUpperCase()}`);
+	const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+	if (mediaTypeFromBytes(bytes) !== contentType) {
+		throw new Error(`${kind === "image" ? "Image" : "Media"} bytes are not valid ${contentType.toUpperCase()}`);
 	}
 	const wrapper = document.createElement("div");
+	if (kind === "media") {
+		wrapper.className = "paste-media-wrap";
+		const player = document.createElement(contentType === "mp3" ? "audio" : "video");
+		player.className = "paste-media";
+		player.controls = true;
+		player.preload = "metadata";
+		if (contentType === "mp4") player.playsInline = true;
+		player.setAttribute("aria-label", `${contentType.toUpperCase()} paste`);
+		player.src = content.trim();
+		wrapper.append(player);
+		return wrapper;
+	}
 	wrapper.className = "paste-image-wrap";
 	const image = document.createElement("img");
 	image.className = "paste-image";
@@ -166,7 +174,7 @@ async function renderImage(content, contentType) {
 async function renderPasteContent(content, contentType) {
 	if (contentType === "markdown") return renderMarkdown(content);
 	if (contentType === "url") return renderUrl(content);
-	if (contentType === "png" || contentType === "jpeg") return renderImage(content, contentType);
+	if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(contentType)) return renderMedia(content, contentType);
 	const pre = document.createElement("pre");
 	pre.className = "paste";
 	const code = document.createElement("code");
@@ -322,6 +330,12 @@ async function initializePasteContent() {
 		host.replaceChildren(rendered);
 		host.setAttribute("aria-busy", "false");
 		if (copyButton instanceof HTMLButtonElement) copyButton.disabled = false;
+		// Enhance after plaintext is visible; CDN availability must not block the viewer.
+		if (rendered.querySelector("code[class*='language-']")) {
+			void import("./highlight.js?v=1")
+				.then(({ highlightPaste }) => highlightPaste(rendered))
+				.catch((error) => console.warn("Syntax highlighting unavailable", error));
+		}
 		if (!cacheHit && !staffReview) {
 			cachePasteContent(cpCode, contentType, expectedByteLength, expectedHash, content);
 		}

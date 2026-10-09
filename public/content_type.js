@@ -4,7 +4,7 @@ export function contentTypeForFilename(filename) {
 		txt: "plaintext", text: "plaintext",
 		url: "url",
 		md: "markdown", markdown: "markdown",
-		png: "png", jpg: "jpeg", jpeg: "jpeg",
+		png: "png", jpg: "jpeg", jpeg: "jpeg", webp: "webp", gif: "gif", mp3: "mp3", mp4: "mp4",
 		js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
 		ts: "typescript", mts: "typescript", cts: "typescript", tsx: "typescript",
 		py: "python", java: "java", json: "json", jsonl: "json",
@@ -28,6 +28,10 @@ export function detectContentType(content) {
 
 	if (/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "png";
 	if (/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "jpeg";
+	if (/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "webp";
+	if (/^data:image\/gif;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "gif";
+	if (/^data:audio\/mpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "mp3";
+	if (/^data:video\/mp4;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "mp4";
 
 	if (!/\s/.test(text)) {
 		try {

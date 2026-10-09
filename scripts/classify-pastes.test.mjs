@@ -115,13 +115,26 @@ Deno.test("default cap accepts the reported 116666-byte paste and the boundary",
 	}
 });
 
-Deno.test("images and oversized bodies are explicitly skipped without a model call", async () => {
-	for (const meta of [{ content_type: "png" }, { content_type: "jpeg" }, { byte_length: DEFAULT_MAX_BYTES + 1 }]) {
+Deno.test("media and oversized bodies are explicitly skipped without a model call", async () => {
+	for (const meta of [
+		...["png", "jpeg", "webp", "gif", "mp3", "mp4"].map((content_type) => ({ content_type })),
+		{ byte_length: DEFAULT_MAX_BYTES + 1 },
+	]) {
 		const { fetchImpl, calls } = fixtureFetch({ meta });
 		const result = await execute([ID], fetchImpl);
 		assertEquals(result.code, 0);
 		assertEquals(JSON.parse(result.out[0]).status, "skipped");
 		assertEquals(calls.length, 1);
+	}
+});
+
+Deno.test("media data URLs with misleading metadata never reach Jev", async () => {
+	for (const mime of ["image/gif", "audio/mpeg", "video/mp4"]) {
+		const { fetchImpl, calls } = fixtureFetch({ content: `data:${mime};base64,eA==`, meta: { content_type: "plaintext" } });
+		const result = await execute([ID], fetchImpl);
+		assertEquals(result.code, 0);
+		assertEquals(JSON.parse(result.out[0]).status, "skipped");
+		assertEquals(calls.length, 2);
 	}
 });
 

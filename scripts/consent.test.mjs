@@ -47,8 +47,22 @@ test("upload page displays separate unchecked consent controls", async () => {
 	const html = await response.text();
 	assert.equal(response.status, 200);
 	assert.match(html, /id="consent" \/><span>I consent to the collection and storage/);
-	assert.match(html, /id="consent-moderation" \/><span>I consent to sending paste text/);
+	const moderationConsent = html.match(/id="consent-moderation" \/><span>(.*?)<\/span>/)[1];
+	assert.match(moderationConsent, /href="\/about#service-providers">service providers<\/a>/);
+	assert.doesNotMatch(moderationConsent, /DefAPI|TypeSafe/);
 	assert.match(html, /id="publish" disabled/);
+});
+
+test("about page lists service providers and the data they process", async () => {
+	const response = await mf.dispatchFetch("https://cp.codes/about");
+	const html = await response.text();
+	assert.equal(response.status, 200);
+	assert.match(html, /<h2 id="service-providers">Service providers<\/h2>/);
+	for (const name of ["Cloudflare", "DefAPI", "TypeSafe", "jsDelivr"]) {
+		assert.ok(html.includes(`<strong>${name}</strong>`));
+	}
+	assert.match(html, /Paste text, description, filename, and content type/);
+	assert.match(html, /Private IP\/location metadata and proof-of-work details are not sent/);
 });
 
 test("browser requires both consents, locks both while busy, and submits both", async () => {
@@ -82,8 +96,8 @@ test("browser requires both consents, locks both while busy, and submits both", 
 		},
 	});
 	// Execute the actual initialization and publish function, with PoW helpers mocked.
-	const initialization = source.slice(0, source.indexOf("const IMAGE_MEDIA_TYPES"))
-		.replace(/^import .*;$/m, "");
+	const initialization = source.slice(0, source.indexOf("async function verifyDecodableImage"))
+		.replace(/^import .*;$/gm, "");
 	const publish = source.slice(source.indexOf("async function publish()"),
 		source.indexOf('publishBtn.addEventListener("click"'));
 	vm.runInContext(initialization + publish, context);
