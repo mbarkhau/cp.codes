@@ -2,6 +2,8 @@ export const CONTENT_TYPES = [
 	"plaintext",
 	"url",
 	"markdown",
+	"png",
+	"jpeg",
 	"javascript",
 	"typescript",
 	"python",
@@ -29,6 +31,9 @@ export const CONTENT_TYPE_FILES: Record<ContentType, { extension: string; mediaT
 	plaintext: { extension: "txt", mediaType: "text/plain" },
 	url: { extension: "url", mediaType: "text/uri-list" },
 	markdown: { extension: "md", mediaType: "text/markdown" },
+	// Image paste bodies are UTF-8 data URLs; raw routes return that URL as text.
+	png: { extension: "png", mediaType: "text/plain" },
+	jpeg: { extension: "jpg", mediaType: "text/plain" },
 	javascript: { extension: "js", mediaType: "text/javascript" },
 	typescript: { extension: "ts", mediaType: "text/typescript" },
 	python: { extension: "py", mediaType: "text/x-python" },
@@ -58,9 +63,44 @@ export function rawContentType(type: ContentType): string {
 	return mediaType.startsWith("text/") ? `${mediaType}; charset=utf-8` : mediaType;
 }
 
+const CONTENT_TYPE_EXTENSION_ALIASES: Readonly<Record<string, ContentType>> = {
+	text: "plaintext",
+	markdown: "markdown",
+	jpeg: "jpeg",
+	jpg: "jpeg",
+	mjs: "javascript",
+	cjs: "javascript",
+	jsx: "javascript",
+	mts: "typescript",
+	cts: "typescript",
+	tsx: "typescript",
+	jsonl: "json",
+	htm: "html",
+	bash: "shell",
+	zsh: "shell",
+	fish: "shell",
+	yml: "yaml",
+	h: "c",
+	cc: "cpp",
+	cxx: "cpp",
+	hh: "cpp",
+	hpp: "cpp",
+	hxx: "cpp",
+};
+
 export function contentTypeForExtension(extension: string): ContentType | null {
-	const normalized = extension.toLowerCase();
-	return CONTENT_TYPES.find((type) => fileExtension(type) === normalized) ?? null;
+	const normalized = extension.toLowerCase().replace(/^\./, "");
+	return CONTENT_TYPES.find((type) => fileExtension(type) === normalized)
+		?? CONTENT_TYPE_EXTENSION_ALIASES[normalized]
+		?? null;
+}
+
+/** Resolve a supplied filename by its final extension, without inspecting content. */
+export function contentTypeForFilename(filename: string): ContentType {
+	const basename = filename.trim().split(/[\\/]/).pop() ?? "";
+	const dot = basename.lastIndexOf(".");
+	if (dot <= 0 || dot === basename.length - 1) return "plaintext";
+	return contentTypeForExtension(basename.slice(dot + 1)) ?? "plaintext";
 }
 
 export const CONTENT_TYPE_LABELS: Record<ContentTypeChoice, string> = {
@@ -68,6 +108,8 @@ export const CONTENT_TYPE_LABELS: Record<ContentTypeChoice, string> = {
 	plaintext: "Plaintext",
 	url: "URL",
 	markdown: "Markdown",
+	png: "PNG image",
+	jpeg: "JPEG image",
 	javascript: "JavaScript",
 	typescript: "TypeScript",
 	python: "Python",
@@ -120,6 +162,8 @@ function matches(content: string, patterns: RegExp[]): number {
  */
 export function detectContentType(content: string): ContentType {
 	const text = content.trim();
+	if (/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "png";
+	if (/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "jpeg";
 	if (parseHttpUrl(text)) return "url";
 	if (!text) return "plaintext";
 

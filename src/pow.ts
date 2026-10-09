@@ -11,10 +11,13 @@
  *
  * At the base difficulty of 16 bits, a proof takes 65,536 attempts on average
  * and about 45,426 attempts for a 50% chance of success. The difficulty rises
- * with the number of pastes created in the preceding ten minutes.
+ * with recent paste volume and with paste size.
  */
 
 import { DurableObject } from "cloudflare:workers";
+
+/** A SHA-256 digest cannot have more than 256 leading zero bits. */
+export const MAX_POW_DIFFICULTY_BITS = 256;
 
 export const POW_DEFAULTS = {
 	/** Base number of leading zero bits required on the SHA-256 digest. */
@@ -270,11 +273,11 @@ function parsePublicChallenge(value: unknown): PublicChallenge | null {
 		typeof rec.difficulty !== "number" ||
 		!Number.isInteger(rec.difficulty) ||
 		rec.difficulty < 0 ||
-		rec.difficulty > 128 ||
+		rec.difficulty > MAX_POW_DIFFICULTY_BITS ||
 		typeof rec.content_hash !== "string" ||
 		!/^[0-9a-f]{64}$/.test(rec.content_hash) ||
 		typeof rec.byte_length !== "number" ||
-		!Number.isInteger(rec.byte_length) ||
+		!Number.isSafeInteger(rec.byte_length) ||
 		rec.byte_length < 1 ||
 		rec.algorithm !== "sha256" ||
 		typeof rec.created_at !== "number" ||
@@ -327,10 +330,14 @@ export async function issueChallenge(
 	input: { contentHash: string; byteLength: number; difficulty: number },
 ): Promise<PublicChallenge> {
 	if (!isContentHash(input.contentHash)) throw new Error("invalid content hash");
-	if (!Number.isInteger(input.byteLength) || input.byteLength < 1) {
+	if (!Number.isSafeInteger(input.byteLength) || input.byteLength < 1) {
 		throw new Error("byte length out of range");
 	}
-	if (!Number.isInteger(input.difficulty) || input.difficulty < 0 || input.difficulty > 128) {
+	if (
+		!Number.isInteger(input.difficulty) ||
+		input.difficulty < 0 ||
+		input.difficulty > MAX_POW_DIFFICULTY_BITS
+	) {
 		throw new Error("difficulty out of range");
 	}
 	const now = Date.now();

@@ -6,6 +6,54 @@
 
 import { encode as encodeQr } from "https://cdn.jsdelivr.net/npm/uqr@0.1.2/+esm";
 
+const QUIET_ZONE_MODULES = 4;
+const ECC_H_RECOVERABLE_AREA_FRACTION = 0.30;
+const RECOVERABLE_AREA_SAFETY_FACTOR = 0.70;
+
+// Byte-mode capacity at error-correction level H. Size excludes the quiet zone.
+const QR_VERSION_INFO = [
+	// { version: 1, size: 21, maxData: 7 },
+	// { version: 2, size: 25, maxData: 14 },
+	// { version: 3, size: 29, maxData: 24 },
+	// { version: 4, size: 33, maxData: 34 },
+	// { version: 5, size: 37, maxData: 44 },
+	{ version: 6, size: 41, maxData: 58 },
+	{ version: 7, size: 45, maxData: 64 },
+	{ version: 8, size: 49, maxData: 84 },
+	{ version: 9, size: 53, maxData: 98 },
+	{ version: 10, size: 57, maxData: 119 },
+	{ version: 11, size: 61, maxData: 137 },
+	{ version: 12, size: 65, maxData: 155 },
+	{ version: 13, size: 69, maxData: 177 },
+	{ version: 14, size: 73, maxData: 194 },
+	{ version: 15, size: 77, maxData: 220 },
+	{ version: 16, size: 81, maxData: 250 },
+	{ version: 17, size: 85, maxData: 280 },
+	{ version: 18, size: 89, maxData: 310 },
+	{ version: 19, size: 93, maxData: 338 },
+	{ version: 20, size: 97, maxData: 382 },
+	{ version: 21, size: 101, maxData: 403 },
+	{ version: 22, size: 105, maxData: 439 },
+	{ version: 23, size: 109, maxData: 461 },
+	{ version: 24, size: 113, maxData: 511 },
+	{ version: 25, size: 117, maxData: 535 },
+	{ version: 26, size: 121, maxData: 593 },
+	{ version: 27, size: 125, maxData: 625 },
+	{ version: 28, size: 129, maxData: 658 },
+	{ version: 29, size: 133, maxData: 698 },
+	{ version: 30, size: 137, maxData: 742 },
+	{ version: 31, size: 141, maxData: 790 },
+	{ version: 32, size: 145, maxData: 842 },
+	{ version: 33, size: 149, maxData: 898 },
+	{ version: 34, size: 153, maxData: 958 },
+	{ version: 35, size: 157, maxData: 983 },
+	{ version: 36, size: 161, maxData: 1051 },
+	{ version: 37, size: 165, maxData: 1093 },
+	{ version: 38, size: 169, maxData: 1139 },
+	{ version: 39, size: 173, maxData: 1219 },
+	{ version: 40, size: 177, maxData: 1273 },
+];
+
 const GLYPH_CHARS_5X8 = ["0123456789", "ABCDEFGHIJ", "KLMNOPQRST", "UVWXYZ#+-.", ":=!?/"];
 const FONT_TEXT_5X8 = `
 .##.. ..#.. .##.. .##.. .#.#. ####. .##.. ####. .##.. .##..
@@ -390,10 +438,16 @@ function drawQrModules(buf, bufW, modules, modulePixels) {
 	}
 }
 
+function labelCoveredArea(lines, font, fontPixelSize) {
+	const [width, height] = labelSize(lines, font, fontPixelSize);
+	const pad = fontPixelSize;
+	return (width + 2 * pad) * (height + 2 * pad);
+}
+
 function drawQrLabel(buf, bufW, bufH, lines, font, fontPixelSize) {
 	const [width, height] = labelSize(lines, font, fontPixelSize);
 	const pad = fontPixelSize;
-	const modulePixels = fontPixelSize * 2;
+	const modulePixels = fontPixelSize;
 	const bannerWidth = width + 2 * pad;
 	const bannerHeight = height + 2 * pad;
 
@@ -473,7 +527,7 @@ function makeModules(payload, version) {
 		ecc: "H",
 		minVersion: version,
 		maxVersion: version,
-		border: 4,
+		border: QUIET_ZONE_MODULES,
 		boostEcc: false,
 	});
 	return qr.data;
@@ -483,7 +537,7 @@ function makeModules(payload, version) {
  * Render a CP-Code QR into an offscreen grayscale buffer.
  * Always encodes https://cp.codes/<id> (production URL), matching the prototype.
  */
-export function renderCpCode(cpCode, modulePixels = 2) {
+export function renderCpCode(cpCode, modulePixels = 1) {
 	if (!Number.isInteger(modulePixels) || modulePixels < 1) {
 		throw new Error("module pixels must be a positive integer");
 	}
@@ -495,48 +549,67 @@ export function renderCpCode(cpCode, modulePixels = 2) {
 	const visual = displayText(id);
 	const font = selectFont(visual);
 	const lines = wrapLabel(visual);
-	// Center label: half-module font pixels (prototype: module_pixels // 2).
-	const fontPixelSize = Math.max(1, Math.floor(modulePixels / 2));
+	// Each bitmap-font pixel occupies exactly one QR module.
+	const fontPixelSize = modulePixels;
 
-	// Fixed-length production URL → version 4 is the prototype's answer and
-	// still scans with the center label (ecc H). Try 4..8 if 4 cannot fit.
-	let modules = null;
+	const labelArea = labelCoveredArea(lines, font, fontPixelSize);
+	const payloadByteLength = new TextEncoder().encode(qrPayload).length;
 	let version = null;
-	for (let v = 4; v <= 8; v++) {
-		try {
-			modules = makeModules(qrPayload, v);
-			version = v;
-			break;
-		} catch {
-			// data overflow at this version
-		}
+	let qrSize = null;
+	let qrArea = null;
+	let maxDestroyedArea = null;
+
+	// Use half of ECC H's nominal 30% recovery limit to account for the label's
+	// damage being concentrated rather than distributed throughout the symbol.
+	for (const candidate of QR_VERSION_INFO) {
+		if (payloadByteLength > candidate.maxData) continue;
+
+		const candidateQrArea = (candidate.size * modulePixels) ** 2;
+		const candidateMaxDestroyedArea = Math.floor(
+			candidateQrArea * ECC_H_RECOVERABLE_AREA_FRACTION * RECOVERABLE_AREA_SAFETY_FACTOR,
+		);
+		if (candidateMaxDestroyedArea <= labelArea) continue;
+
+		version = candidate.version;
+		qrSize = candidate.size;
+		qrArea = candidateQrArea;
+		maxDestroyedArea = candidateMaxDestroyedArea;
+		break;
 	}
-	if (!modules) {
-		throw new Error("QR encode failed for all candidate versions");
+	if (version === null) {
+		throw new Error("QR encode failed: no version can tolerate the label area");
 	}
 
+	const modules = makeModules(qrPayload, version);
 	const size = modules.length;
 	const px = size * modulePixels;
 	const buf = createBuffer(px, px, 255);
 	drawQrModules(buf, px, modules, modulePixels);
 	drawQrLabel(buf, px, px, lines, font, fontPixelSize);
-	const linked = drawCpLink(buf, px, px, id, modulePixels);
 
 	return {
-		...linked,
+		buf,
+		width: px,
+		height: px,
 		version,
 		label: lines.join(" "),
+		labelArea,
+		qrSize,
+		qrArea,
+		maxDestroyedArea,
 		payload: qrPayload,
 		href,
 	};
 }
 
 /** Paint a CP-Code QR onto an HTML or offscreen canvas (resizes the canvas). */
-export function renderCpCodeToCanvas(canvas, cpCode, modulePixels = 2) {
-	const { buf, width, height, version, label, payload, href } = renderCpCode(cpCode, modulePixels);
+export function renderCpCodeToCanvas(canvas, cpCode, modulePixels = 1) {
+	const result = renderCpCode(cpCode, modulePixels);
+	const { buf, width, height } = result;
 	canvas.width = width;
 	canvas.height = height;
 	const ctx = canvas.getContext("2d");
 	ctx.putImageData(bufferToImageData(buf, width, height), 0, 0);
-	return { version, label, payload, href, width, height };
+	const { version, label, labelArea, qrSize, qrArea, maxDestroyedArea, payload, href } = result;
+	return { version, label, labelArea, qrSize, qrArea, maxDestroyedArea, payload, href, width, height };
 }

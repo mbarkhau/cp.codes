@@ -3,7 +3,7 @@
  *
  * The version is identified by the total ID length, not stored in the payload.
  *
- * 8-character ID = `CP` + 6-character Base32 (30 bit) payload:
+ * Version0: 8-character ID = `CP` + 6-character Base32 (30 bit) payload
  *
  * - timestamp: 24 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
  * - counter: 4 bits — per-tick sequence number
@@ -11,13 +11,23 @@
  *
  * Layout: [timestamp:24][counter:4][region:2]
  *
- * 9-character ID = `CP` + 7-character Base32 (35 bit) payload:
+ *
+ * Version 1: 9-character ID = `CP` + 7-character Base32 (35 bit) payload
  *
  * - timestamp: 24 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
  * - counter: 9 bits — per-tick sequence number
  * - region ID: 2 bits
  *
  * Layout: [timestamp:24][counter:9][region:2]
+ *
+ * Version 2: 12-character ID = `CP` + 10-character Base32 (50 bit) payload
+ *
+ * - timestamp: 24 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
+ * - counter: 9 bits — per-tick sequence number
+ * - region ID: 2 bits
+ * - nonce: 15 bits
+ *
+ * Layout: [timestamp:24][counter:9][region:2][nonce:15]
  *
  * At 5 minute resolution, the 24-bit timestamp wraps after about 160 years.
  * Regions: enam=0, weur=1, apac=2, sam=3.
@@ -30,6 +40,7 @@ export type CPCode = {
 	counter: number;
 	region_id: number;
 	version: number;
+	nonce?: number;
 };
 
 /** Custom alphabet (no M/N/O/W) for readable IDs. */
@@ -39,29 +50,42 @@ export const TIMESTAMP_BITS = 24;
 export const REGION_ID_BITS = 2;
 export const V0_COUNTER_BITS = 4;
 export const V1_COUNTER_BITS = 9;
+export const V2_COUNTER_BITS = 9;
+export const V2_NONCE_BITS = 15;
 
 export const VERSION_0 = 0;
 export const VERSION_1 = 1;
-export const CURRENT_VERSION = VERSION_0;
+export const VERSION_2 = 2;
+export const CURRENT_VERSION = VERSION_2;
 
 export const COUNTER_BITS_BY_VERSION = Object.freeze({
 	[VERSION_0]: V0_COUNTER_BITS,
 	[VERSION_1]: V1_COUNTER_BITS,
+	[VERSION_2]: V2_COUNTER_BITS,
+});
+
+export const NONCE_BITS_BY_VERSION = Object.freeze({
+	[VERSION_0]: 0,
+	[VERSION_1]: 0,
+	[VERSION_2]: V2_NONCE_BITS,
 });
 
 export const PAYLOAD_CHARS_BY_VERSION = Object.freeze({
 	[VERSION_0]: (TIMESTAMP_BITS + V0_COUNTER_BITS + REGION_ID_BITS) / 5,
 	[VERSION_1]: (TIMESTAMP_BITS + V1_COUNTER_BITS + REGION_ID_BITS) / 5,
+	[VERSION_2]: (TIMESTAMP_BITS + V2_COUNTER_BITS + REGION_ID_BITS + V2_NONCE_BITS) / 5,
 });
 
 export const ID_LENGTH_BY_VERSION = Object.freeze({
 	[VERSION_0]: ID_PREFIX.length + PAYLOAD_CHARS_BY_VERSION[VERSION_0],
 	[VERSION_1]: ID_PREFIX.length + PAYLOAD_CHARS_BY_VERSION[VERSION_1],
+	[VERSION_2]: ID_PREFIX.length + PAYLOAD_CHARS_BY_VERSION[VERSION_2],
 });
 
 export const VERSION_BY_ID_LENGTH = Object.freeze({
 	[ID_LENGTH_BY_VERSION[VERSION_0]]: VERSION_0,
 	[ID_LENGTH_BY_VERSION[VERSION_1]]: VERSION_1,
+	[ID_LENGTH_BY_VERSION[VERSION_2]]: VERSION_2,
 });
 
 /** Aliases for the default format. */
@@ -76,6 +100,8 @@ export const TIME_RESOLUTION = 5 * 60;
 export const MAX_TICK = 2 ** TIMESTAMP_BITS;
 export const V0_MAX_COUNTER = 2 ** V0_COUNTER_BITS;
 export const V1_MAX_COUNTER = 2 ** V1_COUNTER_BITS;
+export const V2_MAX_COUNTER = 2 ** V2_COUNTER_BITS;
+export const V2_MAX_NONCE = 2 ** V2_NONCE_BITS;
 
 const MAX_TICK_DURATION_S = MAX_TICK * TIME_RESOLUTION;
 const TIMESTAMP_MASK = (1n << BigInt(TIMESTAMP_BITS)) - 1n;
@@ -84,6 +110,7 @@ const REGION_MASK = (1n << BigInt(REGION_ID_BITS)) - 1n;
 const lastPartsByVersion: Record<number, { timestamp: number; counter: number }> = {
 	[VERSION_0]: { timestamp: 0, counter: -1 },
 	[VERSION_1]: { timestamp: 0, counter: -1 },
+	[VERSION_2]: { timestamp: 0, counter: -1 },
 };
 
 export function timeRange(): { start: number; end: number; years: number } {
@@ -97,18 +124,27 @@ export function timeRange(): { start: number; end: number; years: number } {
 function counterBitsForVersion(version: number): number {
 	if (version === VERSION_0) return V0_COUNTER_BITS;
 	if (version === VERSION_1) return V1_COUNTER_BITS;
+	if (version === VERSION_2) return V2_COUNTER_BITS;
+	throw new Error(`unsupported version: ${version}`);
+}
+
+function nonceBitsForVersion(version: number): number {
+	if (version === VERSION_0 || version === VERSION_1) return 0;
+	if (version === VERSION_2) return V2_NONCE_BITS;
 	throw new Error(`unsupported version: ${version}`);
 }
 
 function payloadCharsForVersion(version: number): number {
 	if (version === VERSION_0) return PAYLOAD_CHARS_BY_VERSION[VERSION_0];
 	if (version === VERSION_1) return PAYLOAD_CHARS_BY_VERSION[VERSION_1];
+	if (version === VERSION_2) return PAYLOAD_CHARS_BY_VERSION[VERSION_2];
 	throw new Error(`unsupported version: ${version}`);
 }
 
 function versionForIdLength(idLength: number): number | undefined {
 	if (idLength === ID_LENGTH_BY_VERSION[VERSION_0]) return VERSION_0;
 	if (idLength === ID_LENGTH_BY_VERSION[VERSION_1]) return VERSION_1;
+	if (idLength === ID_LENGTH_BY_VERSION[VERSION_2]) return VERSION_2;
 	return undefined;
 }
 
@@ -122,6 +158,18 @@ function assertRegionId(regionId: number): void {
 	if (!Number.isInteger(regionId) || regionId < 0 || regionId >= 2 ** REGION_ID_BITS) {
 		throw new Error(`region_id must be between 0 and ${2 ** REGION_ID_BITS - 1}`);
 	}
+}
+
+function assertNonce(nonce: number, maxNonce: number): void {
+	if (!Number.isInteger(nonce) || nonce < 0 || nonce >= maxNonce) {
+		throw new Error(`nonce must be between 0 and ${maxNonce - 1}`);
+	}
+}
+
+function randomNonce(): number {
+	const random = new Uint16Array(1);
+	crypto.getRandomValues(random);
+	return random[0]! & (V2_MAX_NONCE - 1);
 }
 
 /** Python-compatible round-to-nearest, with ties going to the even integer. */
@@ -194,9 +242,19 @@ export function nextParts(
 
 export function encodeCpCode(cpCode: CPCode): string {
 	const counterBits = counterBitsForVersion(cpCode.version);
+	const nonceBits = nonceBitsForVersion(cpCode.version);
 	const maxCounter = 2 ** counterBits;
 	assertCounter(cpCode.counter, maxCounter);
 	assertRegionId(cpCode.region_id);
+
+	let nonce = 0;
+	if (nonceBits) {
+		if (cpCode.nonce === undefined) throw new Error("nonce is required for version 2");
+		assertNonce(cpCode.nonce, 2 ** nonceBits);
+		nonce = cpCode.nonce;
+	} else if (cpCode.nonce !== undefined) {
+		throw new Error("nonce is only supported by version 2");
+	}
 
 	if (!Number.isFinite(cpCode.timestamp)) {
 		throw new Error("timestamp must be a finite number");
@@ -215,9 +273,10 @@ export function encodeCpCode(cpCode: CPCode): string {
 	}
 
 	let payload =
-		(BigInt(tsVal) << BigInt(counterBits + REGION_ID_BITS)) |
-		(BigInt(cpCode.counter) << BigInt(REGION_ID_BITS)) |
-		BigInt(cpCode.region_id);
+		(BigInt(tsVal) << BigInt(counterBits + REGION_ID_BITS + nonceBits)) |
+		(BigInt(cpCode.counter) << BigInt(REGION_ID_BITS + nonceBits)) |
+		(BigInt(cpCode.region_id) << BigInt(nonceBits)) |
+		BigInt(nonce);
 
 	const chars: string[] = [];
 	for (let i = 0; i < payloadCharsForVersion(cpCode.version); i++) {
@@ -232,8 +291,10 @@ export function generateCpCode(
 	timestamp?: number,
 	counter?: number,
 	version: number = CURRENT_VERSION,
+	nonce?: number,
 ): CPCode {
 	const counterBits = counterBitsForVersion(version);
+	const nonceBits = nonceBitsForVersion(version);
 	const maxCounter = 2 ** counterBits;
 	assertRegionId(regionId);
 
@@ -262,11 +323,20 @@ export function generateCpCode(
 		assertCounter(counterPart, maxCounter);
 	}
 
+	let noncePart: number | undefined;
+	if (nonceBits) {
+		noncePart = nonce ?? randomNonce();
+		assertNonce(noncePart, 2 ** nonceBits);
+	} else if (nonce !== undefined) {
+		throw new Error("nonce is only supported by version 2");
+	}
+
 	return {
 		timestamp: timestampPart,
 		counter: counterPart,
 		region_id: regionId,
 		version,
+		...(noncePart === undefined ? {} : { nonce: noncePart }),
 	};
 }
 
@@ -275,8 +345,9 @@ export function makeCpCode(
 	timestamp?: number,
 	counter?: number,
 	version: number = CURRENT_VERSION,
+	nonce?: number,
 ): string {
-	return encodeCpCode(generateCpCode(regionId, timestamp, counter, version));
+	return encodeCpCode(generateCpCode(regionId, timestamp, counter, version, nonce));
 }
 
 export function parseCpCode(cpCodeData: string): CPCode {
@@ -294,6 +365,7 @@ export function parseCpCode(cpCodeData: string): CPCode {
 	}
 
 	const counterBits = counterBitsForVersion(version);
+	const nonceBits = nonceBitsForVersion(version);
 	let payload = 0n;
 	for (const char of cpCodeData.slice(ID_PREFIX.length).toUpperCase()) {
 		const digit = ALPHABET.indexOf(char);
@@ -304,16 +376,21 @@ export function parseCpCode(cpCodeData: string): CPCode {
 	}
 
 	const counterMask = (1n << BigInt(counterBits)) - 1n;
-	const tsVal = Number(
-		(payload >> BigInt(counterBits + REGION_ID_BITS)) & TIMESTAMP_MASK,
+	const nonceMask = (1n << BigInt(nonceBits)) - 1n;
+	const nonce = nonceBits ? Number(payload & nonceMask) : undefined;
+	const regionId = Number((payload >> BigInt(nonceBits)) & REGION_MASK);
+	const counter = Number(
+		(payload >> BigInt(REGION_ID_BITS + nonceBits)) & counterMask,
 	);
-	const counter = Number((payload >> BigInt(REGION_ID_BITS)) & counterMask);
-	const regionId = Number(payload & REGION_MASK);
+	const tsVal = Number(
+		(payload >> BigInt(counterBits + REGION_ID_BITS + nonceBits)) & TIMESTAMP_MASK,
+	);
 
 	return {
 		timestamp: tickToTimestamp(tsVal),
 		counter,
 		region_id: regionId,
 		version,
+		...(nonce === undefined ? {} : { nonce }),
 	};
 }

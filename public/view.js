@@ -1,47 +1,507 @@
 /**
- * Paste view page: restore a cached CP-Code QR or generate it on the client.
+ * Paste view page: fetch/decompress/render content, deletion controls, and QR.
  */
 
-const QR_CACHE_KEY = "cp.codes.qr.png.v2";
-const QR_DISPLAY_SCALE = 3;
+const PASTE_CACHE_KEY = "cp.codes.paste.v1";
+const PASTE_CACHE_MAX_ENTRIES = 10;
+const QR_DISPLAY_SCALE = 6;
+const DELETION_STORAGE_PREFIX = "cp.codes.deletion.v1:";
 
-const activateUrlCheckbox = document.getElementById("activate-url");
-if (activateUrlCheckbox instanceof HTMLInputElement && activateUrlCheckbox.type === "checkbox") {
-	activateUrlCheckbox.addEventListener("change", () => {
-		const valueEl = document.getElementById("url-value");
+async function writeToClipboard(text) {
+	if (typeof navigator.clipboard?.writeText === "function") {
 		try {
-			if (!(valueEl instanceof HTMLSpanElement || valueEl instanceof HTMLAnchorElement)) {
-				throw new Error("URL is unavailable");
-			}
-			const value = valueEl.textContent.trim();
+			await navigator.clipboard.writeText(text);
+			return;
+		} catch {
+			// Fall back for browsers that expose the API but deny access to it.
+		}
+	}
+
+	const textarea = document.createElement("textarea");
+	textarea.value = text;
+	textarea.setAttribute("readonly", "");
+	textarea.style.position = "fixed";
+	textarea.style.opacity = "0";
+	document.body.append(textarea);
+	textarea.select();
+	const copied = document.execCommand("copy");
+	textarea.remove();
+	if (!copied) throw new Error("Clipboard access was denied");
+}
+
+async function sha256Hex(bytes) {
+	if (typeof globalThis.crypto?.subtle?.digest !== "function") {
+		throw new Error("This browser cannot verify the paste hash");
+	}
+	const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+	return [...new Uint8Array(digest)]
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+async function renderMarkdown(content) {
+	const { default: MarkdownIt } = await import("https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/+esm");
+	const markdown = new MarkdownIt({ html: false, linkify: true, typographer: false });
+	const defaultLinkOpen = markdown.renderer.rules.link_open;
+	markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+		tokens[index].attrSet("rel", "nofollow noopener noreferrer");
+		return defaultLinkOpen
+			? defaultLinkOpen(tokens, index, options, env, self)
+			: self.renderToken(tokens, index, options);
+	};
+	const article = document.createElement("article");
+	article.className = "markdown-body";
+	article.innerHTML = markdown.render(content);
+	return article;
+}
+
+function renderUrl(content) {
+	const gate = document.createElement("div");
+	gate.className = "url-gate";
+	gate.id = "url-gate";
+
+	const heading = document.createElement("h2");
+	heading.textContent = "External link";
+	const warning = document.createElement("p");
+	warning.append("This URL leads to an ");
+	const bold = document.createElement("b");
+	bold.textContent = "external website";
+	warning.append(bold, ".", document.createElement("br"));
+	const strong = document.createElement("strong");
+	strong.textContent = "cp.codes is not responsible for any external content on other websites.";
+	warning.append(strong);
+
+	const label = document.createElement("label");
+	label.className = "url-activate";
+	const checkbox = document.createElement("input");
+	checkbox.type = "checkbox";
+	label.append(checkbox, " I understand — activate link");
+
+	const valueHost = document.createElement("p");
+	valueHost.className = "url-value";
+	let valueElement = document.createElement("span");
+	valueElement.id = "url-value";
+	valueElement.textContent = content.trim();
+	valueHost.append(valueElement);
+
+	checkbox.addEventListener("change", () => {
+		try {
 			let replacement;
-			if (activateUrlCheckbox.checked) {
-				const url = new URL(value);
+			if (checkbox.checked) {
+				const url = new URL(content.trim());
 				if (url.protocol !== "http:" && url.protocol !== "https:") {
 					throw new Error("This paste does not contain a safe HTTP(S) URL");
 				}
 				replacement = Object.assign(document.createElement("a"), {
 					id: "url-value",
 					href: url.href,
-					textContent: value,
+					textContent: content.trim(),
 					target: "_blank",
 					rel: "nofollow noopener noreferrer",
 				});
 			} else {
 				replacement = Object.assign(document.createElement("span"), {
 					id: "url-value",
-					textContent: value,
+					textContent: content.trim(),
 				});
 			}
-			valueEl.replaceWith(replacement);
-			activateUrlCheckbox.setCustomValidity("");
-		} catch (err) {
-			activateUrlCheckbox.checked = valueEl instanceof HTMLAnchorElement;
-			activateUrlCheckbox.setCustomValidity(err instanceof Error ? err.message : String(err));
-			activateUrlCheckbox.reportValidity();
+			valueElement.replaceWith(replacement);
+			valueElement = replacement;
+			checkbox.setCustomValidity("");
+		} catch (error) {
+			checkbox.checked = valueElement instanceof HTMLAnchorElement;
+			checkbox.setCustomValidity(error instanceof Error ? error.message : String(error));
+			checkbox.reportValidity();
+		}
+	});
+
+	gate.append(heading, warning, label, valueHost);
+	return gate;
+}
+
+async function renderImage(content, contentType) {
+	const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(content.trim());
+	if (!match || match[1] !== contentType || match[2].length % 4 !== 0) {
+		throw new Error(`Invalid ${contentType.toUpperCase()} image data URL`);
+	}
+	let binary;
+	try {
+		binary = atob(match[2]);
+	} catch {
+		throw new Error(`Invalid ${contentType.toUpperCase()} image encoding`);
+	}
+	const isPng = binary.length >= 8 &&
+		[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+			.every((value, index) => binary.charCodeAt(index) === value);
+	const isJpeg = binary.length >= 4 &&
+		binary.charCodeAt(0) === 0xff && binary.charCodeAt(1) === 0xd8 &&
+		binary.charCodeAt(2) === 0xff &&
+		binary.charCodeAt(binary.length - 2) === 0xff &&
+		binary.charCodeAt(binary.length - 1) === 0xd9;
+	if ((contentType === "png" && !isPng) || (contentType === "jpeg" && !isJpeg)) {
+		throw new Error(`Image bytes are not valid ${contentType.toUpperCase()}`);
+	}
+	const wrapper = document.createElement("div");
+	wrapper.className = "paste-image-wrap";
+	const image = document.createElement("img");
+	image.className = "paste-image";
+	image.src = content.trim();
+	image.alt = `${contentType.toUpperCase()} paste`;
+	image.decoding = "async";
+	if (typeof image.decode === "function") {
+		await image.decode();
+	} else {
+		await new Promise((resolve, reject) => {
+			image.addEventListener("load", resolve, { once: true });
+			image.addEventListener("error", () => reject(new Error("Image could not be decoded")), { once: true });
+		});
+	}
+	if (image.naturalWidth < 1 || image.naturalHeight < 1) {
+		throw new Error("Image has invalid dimensions");
+	}
+	wrapper.append(image);
+	return wrapper;
+}
+
+async function renderPasteContent(content, contentType) {
+	if (contentType === "markdown") return renderMarkdown(content);
+	if (contentType === "url") return renderUrl(content);
+	if (contentType === "png" || contentType === "jpeg") return renderImage(content, contentType);
+	const pre = document.createElement("pre");
+	pre.className = "paste";
+	const code = document.createElement("code");
+	code.className = `language-${contentType}`;
+	code.textContent = content;
+	pre.append(code);
+	return pre;
+}
+
+function readPasteCache() {
+	try {
+		const parsed = JSON.parse(localStorage.getItem(PASTE_CACHE_KEY) || "[]");
+		if (!Array.isArray(parsed)) return [];
+		return parsed
+			.filter((entry) => typeof entry === "object" && entry !== null && typeof entry.id === "string")
+			.slice(-PASTE_CACHE_MAX_ENTRIES);
+	} catch {
+		return [];
+	}
+}
+
+function writePasteCache(entries) {
+	try {
+		localStorage.setItem(PASTE_CACHE_KEY, JSON.stringify(entries));
+		return true;
+	} catch {
+		// localStorage can be unavailable or full; viewing the paste still succeeds.
+		return false;
+	}
+}
+
+function findCachedPaste(entries, cpCode) {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		if (entries[index].id === cpCode) return entries[index];
+	}
+	return null;
+}
+
+function updateCachedPaste(cpCode, patch) {
+	let entries = readPasteCache();
+	const existing = findCachedPaste(entries, cpCode) || { id: cpCode };
+	entries = entries.filter((entry) => entry.id !== cpCode);
+	entries.push({ ...existing, ...patch, id: cpCode });
+	entries = entries.slice(-PASTE_CACHE_MAX_ENTRIES);
+	if (writePasteCache(entries)) return;
+
+	// Prefer the new/updated entry if the browser's storage quota is tight.
+	while (entries.length > 1) {
+		entries.shift();
+		if (writePasteCache(entries)) return;
+	}
+}
+
+function removeCachedPastePart(cpCode, part) {
+	let entries = readPasteCache();
+	const entry = findCachedPaste(entries, cpCode);
+	if (!entry || !(part in entry)) return;
+	entries = entries.filter((candidate) => candidate.id !== cpCode);
+	delete entry[part];
+	if (entry.content || entry.qr) entries.push(entry);
+	writePasteCache(entries);
+}
+
+async function getCachedPasteContent(cpCode, contentType, expectedByteLength, expectedHash) {
+	const entries = readPasteCache();
+	const entry = findCachedPaste(entries, cpCode);
+	const cached = entry?.content;
+	if (
+		typeof cached !== "object" || cached === null ||
+		cached.contentType !== contentType || cached.byteLength !== expectedByteLength ||
+		cached.sha256 !== expectedHash || typeof cached.value !== "string"
+	) {
+		return null;
+	}
+
+	const bytes = new TextEncoder().encode(cached.value);
+	const validLength = bytes.byteLength === expectedByteLength;
+	const validHash = !/^[0-9a-f]{64}$/.test(expectedHash) ||
+		await sha256Hex(bytes) === expectedHash;
+	if (validLength && validHash) return cached.value;
+
+	// Drop corrupt content while retaining a valid QR image for this paste.
+	removeCachedPastePart(cpCode, "content");
+	return null;
+}
+
+function cachePasteContent(cpCode, contentType, byteLength, sha256, content) {
+	updateCachedPaste(cpCode, {
+		content: { contentType, byteLength, sha256, value: content },
+	});
+}
+
+function updateHitCount(response) {
+	const header = response.headers.get("x-hit-count");
+	const count = header === null ? NaN : Number(header);
+	const host = document.getElementById("paste-hit-count");
+	if (!(host instanceof HTMLElement) || !Number.isSafeInteger(count) || count < 0) return;
+	host.textContent = `${count.toLocaleString("en-US")} ${count === 1 ? "hit" : "hits"}`;
+}
+
+async function initializePasteContent() {
+	const host = document.getElementById("paste-content");
+	const copyButton = document.getElementById("copy-paste");
+	if (!(host instanceof HTMLElement)) return null;
+	try {
+		const cpCode = host.dataset.cpCode;
+		const contentUrl = host.dataset.contentUrl;
+		const contentType = host.dataset.contentType || "plaintext";
+		const expectedByteLength = Number(host.dataset.byteLength);
+		const expectedHash = host.dataset.sha256 || "";
+		if (!cpCode || !contentUrl || !Number.isSafeInteger(expectedByteLength) || expectedByteLength < 1) {
+			throw new Error("Paste metadata is invalid");
+		}
+
+		// Staff-only bodies must not enter the public viewer's persistent cache.
+		const staffReview = host.dataset.staffReview === "true";
+		let content = staffReview ? null : await getCachedPasteContent(
+			cpCode,
+			contentType,
+			expectedByteLength,
+			expectedHash,
+		);
+		const cacheHit = content !== null;
+		if (!cacheHit) {
+			const response = await fetch(contentUrl, { headers: { accept: "application/gzip" } });
+			if (!response.ok || !response.body) {
+				throw new Error(`Could not load paste content (${response.status})`);
+			}
+			updateHitCount(response);
+			const encoding = response.headers.get("x-content-encoding") || "identity";
+			let stream = response.body;
+			if (encoding === "gzip") {
+				if (typeof DecompressionStream !== "function") {
+					throw new Error("This browser does not support gzip decompression");
+				}
+				stream = stream.pipeThrough(new DecompressionStream("gzip"));
+			} else if (encoding !== "identity") {
+				throw new Error(`Unsupported content encoding: ${encoding}`);
+			}
+
+			const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+			if (bytes.byteLength !== expectedByteLength) {
+				throw new Error(`Paste length check failed (${bytes.byteLength} != ${expectedByteLength})`);
+			}
+			if (/^[0-9a-f]{64}$/.test(expectedHash)) {
+				const actualHash = await sha256Hex(bytes);
+				if (actualHash !== expectedHash) throw new Error("Paste hash check failed");
+			}
+			content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+		}
+
+		const rendered = await renderPasteContent(content, contentType);
+		host.replaceChildren(rendered);
+		host.setAttribute("aria-busy", "false");
+		if (copyButton instanceof HTMLButtonElement) copyButton.disabled = false;
+		if (!cacheHit && !staffReview) {
+			cachePasteContent(cpCode, contentType, expectedByteLength, expectedHash, content);
+		}
+		return content;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const failure = document.createElement("p");
+		failure.className = "paste-load-error";
+		failure.setAttribute("role", "alert");
+		failure.textContent = `Paste could not be loaded: ${message}`;
+		host.replaceChildren(failure);
+		host.setAttribute("aria-busy", "false");
+		return null;
+	}
+}
+
+function initializePasteCopy(contentPromise) {
+	const button = document.getElementById("copy-paste");
+	if (!(button instanceof HTMLButtonElement)) return;
+
+	button.addEventListener("click", async () => {
+		button.disabled = true;
+		try {
+			const content = await contentPromise;
+			if (typeof content !== "string") throw new Error("Paste content is unavailable");
+			await writeToClipboard(content);
+			button.textContent = "Copied";
+			button.title = "Paste content copied to clipboard";
+		} catch (error) {
+			button.textContent = "Failed";
+			button.title = error instanceof Error ? error.message : String(error);
+		} finally {
+			setTimeout(() => {
+				button.textContent = "Copy";
+				button.title = "";
+				button.disabled = false;
+			}, 1800);
 		}
 	});
 }
+
+function initializePasteDeletion() {
+	const host = document.getElementById("paste-delete");
+	const button = document.getElementById("delete-paste");
+	const countdown = document.getElementById("delete-countdown");
+	const status = document.getElementById("delete-status");
+	if (
+		!(host instanceof HTMLElement) ||
+		!(button instanceof HTMLButtonElement) ||
+		!(countdown instanceof HTMLElement) ||
+		!(status instanceof HTMLElement)
+	) {
+		return;
+	}
+
+	const cpCode = button.dataset.cpCode || "";
+	const storageKey = `${DELETION_STORAGE_PREFIX}${cpCode}`;
+	let grant;
+	try {
+		grant = JSON.parse(localStorage.getItem(storageKey) || "null");
+	} catch {
+		return;
+	}
+	if (
+		typeof grant !== "object" ||
+		grant === null ||
+		typeof grant.token !== "string" ||
+		!/^[0-9a-f]{64}$/.test(grant.token) ||
+		!Number.isSafeInteger(grant.expiresAt)
+	) {
+		try {
+			localStorage.removeItem(storageKey);
+		} catch {
+			// Ignore unavailable storage; the invalid grant is not used.
+		}
+		return;
+	}
+
+	const removeGrant = () => {
+		try {
+			localStorage.removeItem(storageKey);
+		} catch {
+			// The in-memory expiry still prevents use on this page.
+		}
+	};
+	let countdownTimer;
+	const updateCountdown = () => {
+		const seconds = Math.ceil((grant.expiresAt - Date.now()) / 1000);
+		if (seconds <= 0) {
+			if (countdownTimer !== undefined) clearInterval(countdownTimer);
+			removeGrant();
+			host.hidden = true;
+			return false;
+		}
+		const minutes = Math.floor(seconds / 60);
+		countdown.textContent = `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+		return true;
+	};
+
+	if (!updateCountdown()) return;
+	host.hidden = false;
+	countdownTimer = setInterval(updateCountdown, 250);
+
+	button.addEventListener("click", async () => {
+		if (!updateCountdown()) return;
+		if (!confirm(`Delete ${cpCode}? This cannot be undone.`)) return;
+		button.disabled = true;
+		status.className = "status";
+		status.textContent = "Deleting…";
+		try {
+			const response = await fetch(`/api/paste/${encodeURIComponent(cpCode)}`, {
+				method: "DELETE",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ deletion_token: grant.token }),
+			});
+			let result = null;
+			try {
+				result = await response.json();
+			} catch {
+				// Fall back to the HTTP status below.
+			}
+			if (!response.ok) {
+				throw new Error(result?.error || `delete failed (${response.status})`);
+			}
+			clearInterval(countdownTimer);
+			removeGrant();
+			window.location.replace("/");
+		} catch (error) {
+			status.className = "status err";
+			status.textContent = error instanceof Error ? error.message : String(error);
+			button.disabled = false;
+		}
+	});
+}
+
+function initializePasteReport() {
+	const form = document.getElementById("report-paste");
+	const status = document.getElementById("report-status");
+	if (!(form instanceof HTMLFormElement) || !(status instanceof HTMLElement)) return;
+	const cpCode = form.dataset.cpCode || "";
+	const submit = form.querySelector('button[type="submit"]');
+
+	form.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		if (!form.reportValidity()) return;
+		if (submit instanceof HTMLButtonElement) submit.disabled = true;
+		status.className = "status";
+		status.textContent = "Submitting…";
+		const data = new FormData(form);
+		try {
+			const response = await fetch(`/api/paste/${encodeURIComponent(cpCode)}/report`, {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json" },
+				body: JSON.stringify({
+					category: String(data.get("category") || "") || null,
+					email: String(data.get("email") || "") || null,
+				}),
+			});
+			let result = null;
+			try {
+				result = await response.json();
+			} catch {
+				// Fall back to the HTTP status below.
+			}
+			if (!response.ok) throw new Error(result?.error || `report failed (${response.status})`);
+			form.reset();
+			status.className = "status ok";
+			status.textContent = "Report submitted. Thank you.";
+		} catch (error) {
+			status.className = "status err";
+			status.textContent = error instanceof Error ? error.message : String(error);
+			if (submit instanceof HTMLButtonElement) submit.disabled = false;
+		}
+	});
+}
+
+const pasteContentPromise = initializePasteContent();
+initializePasteCopy(pasteContentPromise);
+initializePasteDeletion();
+initializePasteReport();
 
 function firstPaintTiming(timestamp) {
 	const firstPaint = performance.getEntriesByName("first-paint", "paint")[0];
@@ -139,11 +599,9 @@ function setQrDimensions(image, width, height) {
 }
 
 function cacheQrImage(cpCode, width, height, dataUrl) {
-	try {
-		localStorage.setItem(QR_CACHE_KEY, JSON.stringify({ id: cpCode, width, height, dataUrl }));
-	} catch {
-		// localStorage can be unavailable or full; displaying the image still succeeds.
-	}
+	updateCachedPaste(cpCode, {
+		qr: { width, height, dataUrl },
+	});
 }
 
 async function initializeQrImage(image) {
@@ -166,11 +624,7 @@ async function initializeQrImage(image) {
 		} catch {
 			delete image.dataset.qrCacheHit;
 			image.removeAttribute("src");
-			try {
-				localStorage.removeItem(QR_CACHE_KEY);
-			} catch {
-				// Continue by generating a fresh image.
-			}
+			removeCachedPastePart(cpCode, "qr");
 		}
 	}
 

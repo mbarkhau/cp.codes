@@ -1,7 +1,33 @@
+/** Resolve a supplied filename by its final extension, without inspecting content. */
+export function contentTypeForFilename(filename) {
+	const aliases = {
+		txt: "plaintext", text: "plaintext",
+		url: "url",
+		md: "markdown", markdown: "markdown",
+		png: "png", jpg: "jpeg", jpeg: "jpeg",
+		js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+		ts: "typescript", mts: "typescript", cts: "typescript", tsx: "typescript",
+		py: "python", java: "java", json: "json", jsonl: "json",
+		html: "html", htm: "html", css: "css",
+		sh: "shell", bash: "shell", zsh: "shell", fish: "shell",
+		sql: "sql", yaml: "yaml", yml: "yaml", xml: "xml",
+		c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp",
+		hh: "cpp", hpp: "cpp", hxx: "cpp", cs: "csharp",
+		go: "go", rs: "rust", rb: "ruby", php: "php",
+	};
+	const basename = String(filename).trim().split(/[\\/]/).pop() ?? "";
+	const dot = basename.lastIndexOf(".");
+	if (dot <= 0 || dot === basename.length - 1) return "plaintext";
+	return aliases[basename.slice(dot + 1).toLowerCase()] ?? "plaintext";
+}
+
 /** Lightweight, synchronous browser-side content detection. */
 export function detectContentType(content) {
 	const text = content.trim();
 	if (!text) return "plaintext";
+
+	if (/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "png";
+	if (/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "jpeg";
 
 	if (!/\s/.test(text)) {
 		try {

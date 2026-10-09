@@ -1,0 +1,66 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cp-codes",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-05",
+	"workers_dev": true,
+	"observability": {
+		"enabled": true
+	},
+	// Base SHA-256 PoW: 16 bits means 65,536 attempts on average and ~45,426
+	// attempts for a 50% chance. Recent upload volume raises this dynamically.
+	"vars": {
+		"POW_DIFFICULTY_BITS": "16"
+	},
+	// Values belong in .dev.vars locally and Worker secrets in production.
+	"secrets": {
+		"required": ["DEFAPI_KEY"]
+	},
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": true
+	},
+	"r2_buckets": [
+		{
+			"binding": "PASTES",
+			"bucket_name": "cp-codes-pastes",
+			"preview_bucket_name": "cp-codes-pastes-preview"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MONO_CLOCK",
+				"class_name": "MonoClock"
+			},
+			{
+				"name": "POW_KEY",
+				"class_name": "PowKey"
+			},
+			{
+				"name": "PASTE_INDEX",
+				"class_name": "PasteIndex"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MonoClock"]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["PowGate"]
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["PasteIndex"]
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": ["PowKey"],
+			"deleted_classes": ["PowGate"]
+		}
+	]
+}

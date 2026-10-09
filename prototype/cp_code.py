@@ -5,6 +5,7 @@
 # ]
 # ///
 import time
+import secrets
 import threading
 import typing as typ
 import datetime as dt
@@ -30,6 +31,15 @@ import datetime as dt
 #
 # Layout: [timestamp:24][counter:9][region:2]
 #
+# 12-character ID = `CP` + 10-character Base32 (50 bit) payload:
+#
+# - timestamp: 24 bits — ticks since TIME_EPOCH at TIME_RESOLUTION
+# - counter: 9 bits — per-tick sequence number
+# - region ID: 2 bits
+# - random nonce: 15 bits
+#
+# Layout: [timestamp:24][counter:9][region:2][nonce:15]
+#
 # At 5 minute resolution, the 24-bit timestamp wraps around after ~160 years
 # Regions: enam=0, weur=1, apac=2, sam=3
 
@@ -39,6 +49,7 @@ class CPCode(typ.NamedTuple):
     counter: int
     region_id: int
     version: int
+    nonce: int | None = None
 
 
 ALPHABET = "0123456789ABCDEFGHIJKLPQRSTUVXYZ"
@@ -47,22 +58,31 @@ TIMESTAMP_BITS = 24
 REGION_ID_BITS = 2
 V0_COUNTER_BITS = 4
 V1_COUNTER_BITS = 9
+V2_COUNTER_BITS = 9
+V2_NONCE_BITS = 15
 
 VERSION_0 = 0  # id length=8 (payload=6)
 VERSION_1 = 1  # id length=9 (payload=7)
-CURRENT_VERSION = VERSION_0
+VERSION_2 = 2  # id length=12 (payload=10)
+CURRENT_VERSION = VERSION_2
 
 COUNTER_BITS_BY_VERSION = {
     VERSION_0: V0_COUNTER_BITS,
     VERSION_1: V1_COUNTER_BITS,
+    VERSION_2: V2_COUNTER_BITS,
+}
+NONCE_BITS_BY_VERSION = {
+    VERSION_0: 0,
+    VERSION_1: 0,
+    VERSION_2: V2_NONCE_BITS,
 }
 assert all(
-    (TIMESTAMP_BITS + counter_bits + REGION_ID_BITS) % 5 == 0
-    for counter_bits in COUNTER_BITS_BY_VERSION.values()
+    (TIMESTAMP_BITS + counter_bits + REGION_ID_BITS + NONCE_BITS_BY_VERSION[version]) % 5 == 0
+    for version, counter_bits in COUNTER_BITS_BY_VERSION.items()
 )
 
 PAYLOAD_CHARS_BY_VERSION = {
-    version: (TIMESTAMP_BITS + counter_bits + REGION_ID_BITS) // 5
+    version: (TIMESTAMP_BITS + counter_bits + REGION_ID_BITS + NONCE_BITS_BY_VERSION[version]) // 5
     for version, counter_bits in COUNTER_BITS_BY_VERSION.items()
 }
 ID_LENGTH_BY_VERSION = {
@@ -73,7 +93,7 @@ VERSION_BY_ID_LENGTH = {
     id_length: version for version, id_length in ID_LENGTH_BY_VERSION.items()
 }
 
-assert ID_LENGTH_BY_VERSION == {VERSION_0: 8, VERSION_1: 9}
+assert ID_LENGTH_BY_VERSION == {VERSION_0: 8, VERSION_1: 9, VERSION_2: 12}
 
 # Aliases for the default format.
 PAYLOAD_CHARS = PAYLOAD_CHARS_BY_VERSION[CURRENT_VERSION]
@@ -85,10 +105,13 @@ TIME_RESOLUTION = 5 * 60
 MAX_TICK = 1 << TIMESTAMP_BITS
 V0_MAX_COUNTER = 1 << V0_COUNTER_BITS
 V1_MAX_COUNTER = 1 << V1_COUNTER_BITS
+V2_MAX_COUNTER = 1 << V2_COUNTER_BITS
+V2_MAX_NONCE = 1 << V2_NONCE_BITS
 
 _last_parts = {
     VERSION_0: (0, -1),
     VERSION_1: (0, -1),
+    VERSION_2: (0, -1),
 }
 _last_lock = threading.Lock()
 
@@ -138,6 +161,7 @@ def next_parts(
 def encode_cp_code(cp_code: CPCode) -> str:
     try:
         counter_bits = COUNTER_BITS_BY_VERSION[cp_code.version]
+        nonce_bits = NONCE_BITS_BY_VERSION[cp_code.version]
     except KeyError:
         raise ValueError(f"unsupported version: {cp_code.version}") from None
 
@@ -146,6 +170,14 @@ def encode_cp_code(cp_code: CPCode) -> str:
         raise ValueError(f"counter must be between 0 and {max_counter - 1}")
     if not 0 <= cp_code.region_id < (1 << REGION_ID_BITS):
         raise ValueError(f"region_id must be between 0 and {(1 << REGION_ID_BITS) - 1}")
+    if nonce_bits:
+        if cp_code.nonce is None or not 0 <= cp_code.nonce < (1 << nonce_bits):
+            raise ValueError(f"nonce must be between 0 and {(1 << nonce_bits) - 1}")
+        nonce = cp_code.nonce
+    else:
+        if cp_code.nonce is not None:
+            raise ValueError("nonce is only supported by version 2")
+        nonce = 0
 
     offset = cp_code.timestamp - TIME_EPOCH
     if offset < 0:
@@ -158,9 +190,10 @@ def encode_cp_code(cp_code: CPCode) -> str:
         raise ValueError("timestamp is outside the supported range")
 
     payload = (
-        (ts_val << (counter_bits + REGION_ID_BITS))
-        | (cp_code.counter << REGION_ID_BITS)
-        | cp_code.region_id
+        (ts_val << (counter_bits + REGION_ID_BITS + nonce_bits))
+        | (cp_code.counter << (REGION_ID_BITS + nonce_bits))
+        | (cp_code.region_id << nonce_bits)
+        | nonce
     )
 
     chars = []
@@ -175,9 +208,11 @@ def generate_cp_code(
     timestamp: int | float | None = None,
     counter: int | None = None,
     version: int = CURRENT_VERSION,
+    nonce: int | None = None,
 ) -> CPCode:
     try:
         counter_bits = COUNTER_BITS_BY_VERSION[version]
+        nonce_bits = NONCE_BITS_BY_VERSION[version]
     except KeyError:
         raise ValueError(f"unsupported version: {version}") from None
 
@@ -203,7 +238,15 @@ def generate_cp_code(
         if not 0 <= ctr < max_counter:
             raise ValueError(f"counter must be between 0 and {max_counter - 1}")
 
-    return CPCode(ts, ctr, region_id, version)
+    if nonce_bits:
+        if nonce is None:
+            nonce = secrets.randbelow(1 << nonce_bits)
+        elif not 0 <= nonce < (1 << nonce_bits):
+            raise ValueError(f"nonce must be between 0 and {(1 << nonce_bits) - 1}")
+    elif nonce is not None:
+        raise ValueError("nonce is only supported by version 2")
+
+    return CPCode(ts, ctr, region_id, version, nonce)
 
 
 def make_cp_code(*args, **kwargs) -> str:
@@ -220,6 +263,7 @@ def parse_cp_code(cp_code_data: str) -> CPCode:
 
     version = VERSION_BY_ID_LENGTH[len(cp_code_data)]
     counter_bits = COUNTER_BITS_BY_VERSION[version]
+    nonce_bits = NONCE_BITS_BY_VERSION[version]
     payload = 0
     for char in cp_code_data[len(ID_PREFIX) :].upper():
         try:
@@ -228,11 +272,14 @@ def parse_cp_code(cp_code_data: str) -> CPCode:
             raise ValueError(f"invalid Base32 character: {char!r}") from None
         payload = (payload << 5) | digit
 
-    ts_val = (payload >> (counter_bits + REGION_ID_BITS)) & ((1 << TIMESTAMP_BITS) - 1)
-    counter = (payload >> REGION_ID_BITS) & ((1 << counter_bits) - 1)
-    region_id = payload & ((1 << REGION_ID_BITS) - 1)
+    nonce = payload & ((1 << nonce_bits) - 1) if nonce_bits else None
+    region_id = (payload >> nonce_bits) & ((1 << REGION_ID_BITS) - 1)
+    counter = (payload >> (REGION_ID_BITS + nonce_bits)) & ((1 << counter_bits) - 1)
+    ts_val = (
+        payload >> (counter_bits + REGION_ID_BITS + nonce_bits)
+    ) & ((1 << TIMESTAMP_BITS) - 1)
 
-    return CPCode(tick_to_timestamp(ts_val), counter, region_id, version)
+    return CPCode(tick_to_timestamp(ts_val), counter, region_id, version, nonce)
 
 
 def main() -> None:

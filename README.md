@@ -1,18 +1,449 @@
 # CP-Codes
 
-A basic document store over http intended for use by humans. Create plaintext documents that are identified by a QR code and short ID. Either print the QR code, or just write down the short CP-Code for others to retreive the document later. 
+A basic public pastebin / document store. Pastes are identified by short **CP-Codes**
+(e.g. `CP0A1B2C`). No accounts — uploads are gated by a **SHA-256** proof of
+work instead.
 
- - All data is public. 
- - No need to register, provide an email or anything
- - Documents can be persisted indefinetly, but large/old documents may be purged if the platform cost gets out of hand.
+- New uploads undergo automated moderation; visible content is public unless moderation hides or deletes it
+- No registration or email required to publish (reporters may optionally provide a contact email)
+- Documents may persist indefinitely; large/old documents may be purged if cost demands it
+- UTF-8 text plus PNG/JPEG images encoded as base64 data URLs, with uncompressed paste size priced into the proof-of-work difficulty
+- Browser-side gzip compression, decompression, content detection, Markdown/image rendering, and URL handling
+- Every upload burns a single-use SHA-256 PoW challenge (base: 65,536 attempts on average; ~45,426 for a 50% chance)
+- The verified proof and submitting request metadata are retained with each paste; proof details are public, while public responses never expose request metadata
 
-Strict rate limiting is applied and only plaintext/code is accepted as input.
+https://cp.codes is **not** a free-speech platform. Operators delete content they don't
+want. Access logs may be provided to law enforcement; content is removed on legal request.
 
-CP-Codes is free and open source. On your own instance, you can do what you want, but https://cp.codes is not a free speach platform. Admins will delete any data they don't like.
+Use cases: URL notes, pastebin, public notices.
 
-Every upload and access is logged and will be provided to law enforcement. Admins will take down any document upon any legal request.
+## Local development
 
-Use cases:
- - URL shortner
- - Pastebin
- - Public Notices
+```bash
+npm install
+make dev          # wrangler dev → http://localhost:8787
+```
+
+Optional PoW tuning (also settable in `wrangler.jsonc` `vars`):
+
+|        Variable       | Default |                        Meaning                        |
+|-----------------------|---------|-------------------------------------------------------|
+| `POW_DIFFICULTY_BITS` | `16`    | Base leading zero bits required on the SHA-256 digest |
+
+Each search iteration computes one SHA-256 digest. Success probability per attempt
+is `2^-difficulty`; at the base difficulty, work is 65,536 attempts on average
+and ~45,426 attempts for a 50% chance. Difficulty increases with paste volume in a
+rolling 10-minute window: the 15th recent paste adds one bit, the 16th adds two,
+and so on. Paste size also raises difficulty: the first 10 KiB uses the
+rate-adjusted difficulty, and each additional started 100 KiB block adds one bit.
+There is no application-level size cap; difficulty saturates at SHA-256's
+mathematical maximum of 256 leading zero bits. The browser splits non-overlapping nonce
+ranges across a Web Worker pool sized from the available logical CPU cores (up to
+16 workers). Each worker uses native Web Crypto when available and lazily loads a
+WebAssembly SHA-256 fallback otherwise. The server uses its native Web Crypto implementation and verifies a proof with
+one digest. Challenges are authenticated but not persisted: a Durable Object
+generates and stores one HMAC key, and each Worker isolate retrieves and caches
+that immutable key. Only successful challenge redemptions are recorded to
+prevent proof replay.
+
+Fast local iteration:
+
+```bash
+npx wrangler dev --var POW_DIFFICULTY_BITS:1
+```
+
+## Python CLI
+
+`scripts/paste.py` requires Python 3.9+ and no third-party packages. It reads a
+UTF-8 file or stdin, hashes and gzips the original bytes, requests a signed
+challenge, solves the SHA-256 proof, and uploads the paste. `--consent` explicitly
+agrees to the service collecting and retaining your IP/location metadata.
+`--consent-moderation` separately agrees to sending paste text, description, and
+filename to DefAPI/TypeSafe for automated moderation. Both flags are required.
+
+```bash
+python3 scripts/paste.py --consent --consent-moderation hello.txt
+printf 'Hello from stdin\n' | python3 scripts/paste.py --consent --consent-moderation
+python3 scripts/paste.py --consent --consent-moderation --content-type markdown --unlisted note.md
+python3 scripts/paste.py --consent --consent-moderation --json hello.txt > paste-result.json
+python3 scripts/paste.py --consent --consent-moderation --base-url http://localhost:8787 hello.txt
+```
+
+The default output is the paste URL on stdout; progress, the 10-minute deletion
+token, and moderation warnings go to stderr. `--json` returns the full API response
+(including the deletion token) on stdout. Keep that response private. Unlisted
+pastes are still public to anyone with the URL, and uploads may be hidden pending
+moderation review.
+
+Content defaults to `plaintext`; use `--content-type` for Markdown, code, URLs,
+or already encoded PNG/JPEG data URLs. Raw binary images are not accepted by this
+CLI. The input file's basename becomes the public filename; `--filename` overrides
+it (use `--filename ''` to omit it). `--description` adds a public description.
+HTTP requests time out after 60 seconds and proof searches after 120 seconds per
+challenge; override with `--timeout` and `--pow-timeout`. An expired/rejected proof
+is retried once with a fresh challenge; ambiguous network failures are not retried.
+
+Run CLI tests with:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_paste.py'
+```
+
+## API
+
+### `POST /api/challenge`
+
+```json
+{ "content_hash": "<sha256 hex of utf-8 body>", "byte_length": 123 }
+```
+
+Returns:
+
+```json
+{
+  "version": 1,
+  "challenge_id": "…",
+  "nonce": "<random hex>",
+  "difficulty": 16,
+  "content_hash": "…",
+  "byte_length": 123,
+  "algorithm": "sha256",
+  "created_at": 0,
+  "expires_at": 0,
+  "expected_attempts_p50": 45426,
+  "signature": "<base64url HMAC-SHA-256>"
+}
+```
+
+### `POST /api/paste`
+
+```json
+{
+  "content_gzip": "H4sIAAAAA…",
+  "compression": "gzip",
+  "content_type": "plaintext",
+  "description": "optional description",
+  "filename": "hello.txt",
+  "unlisted": false,
+  "consent": true,
+  "consent_moderation": true,
+  "challenge": {
+    "version": 1,
+    "challenge_id": "…",
+    "nonce": "…",
+    "difficulty": 16,
+    "content_hash": "…",
+    "byte_length": 5,
+    "algorithm": "sha256",
+    "created_at": 0,
+    "expires_at": 0,
+    "expected_attempts_p50": 45426,
+    "signature": "…"
+  },
+  "solution": "<decimal counter that satisfies difficulty>",
+  "pow_hash": "<sha256 hex>"
+}
+```
+
+Hash input: `"{content_hash}:{challenge_id}:{nonce}:{solution}"`
+
+The server first authenticates `challenge`, then checks that
+`pow_hash` is the SHA-256 digest of that input and has ≥ `difficulty` leading
+zero bits. It decodes `content_gzip` from base64 and decompresses it exactly once,
+rejecting output beyond the signed `byte_length`. That one decompressed buffer is
+used to verify the UTF-8 content length and SHA-256 hash and to create the recent-list
+preview. After verification, Jev assesses the text and public descriptive metadata before
+the original gzip bytes are published to R2. The initial visibility and machine
+assessment are persisted first, so flagged content is never briefly exposed while
+classification runs. The challenge is recorded only
+after a valid proof, making it single-use without persisting unproven challenge requests. If the server rejects
+a proof as invalid, expired, or already used, the browser requests one fresh
+challenge and solves it again before reporting an error. A successful response
+also includes a random `deletion_token` and `deletion_expires_at` timestamp. The
+browser stores this grant in local storage for that paste; it is never returned
+by the read API and expires after 10 minutes.
+
+`content_type` must be the client's resolved type: `plaintext`, `url`, `markdown`,
+`png`, `jpeg`, `javascript`, `typescript`, `python`, `java`, `json`, `html`, `css`, `shell`, `sql`,
+`yaml`, `xml`, `c`, `cpp`, `csharp`, `go`, `rust`, `ruby`, or `php`. `description`
+and `filename` are optional, and `unlisted` defaults to `false`. Both `consent`
+(collection/storage of IP and location) and `consent_moderation` (automated
+processing with DefAPI/TypeSafe) must be `true`; missing, false, or non-boolean
+consents are rejected with HTTP 403. The browser's auto mode uses the filename extension when supplied and
+otherwise inspects the content. File selection, drag-and-drop, and clipboard paste
+accept UTF-8 files plus signature-checked PNG/JPEG images. Images are converted to
+`data:image/png;base64,…` or `data:image/jpeg;base64,…` before hashing, compression,
+and upload. Markdown/image rendering and the external-URL warning for unreviewed
+URL pastes are implemented in the browser. Once staff approve a URL paste, the
+server validates its HTTP(S) target and serves its canonical CP-Code as a temporary
+redirect.
+
+Listed pastes use short version 0 CP-Codes and appear in recent uploads. Unlisted
+pastes use longer version 2 CP-Codes and are omitted from recent uploads (but remain
+public to anyone who knows the URL).
+
+Each successful upload privately retains `cf-connecting-ip`, `x-real-ip`, and
+`cf-ipcountry`, plus Cloudflare's `asn`, `asOrganization`, `country`,
+`isEUCountry`, `city`, `continent`, `region`, `regionCode`, `timezone`,
+`longitude`, `latitude`, and `postalCode` request properties. Missing properties
+are stored as empty values and read back as null. These fields use
+`upload_`-prefixed R2 custom metadata keys and are not included in public paste,
+recent-upload, or creation responses. `GET /client-info` displays the values that
+would be retained for the current request.
+
+### `DELETE /api/paste/:id`
+
+During the 10 minutes after creation, delete a paste by submitting the bearer grant
+in the JSON body:
+
+```json
+{ "deletion_token": "<token returned by POST /api/paste>" }
+```
+
+The paste view shows a delete button and live countdown only when this browser has
+an unexpired grant for that paste in local storage. Deletion removes the R2 body and
+sets the PasteIndex visibility to `deleted`; the paste metadata is retained for the
+audit trail.
+
+### `POST /api/paste/:id/report`
+
+Report a paste as suspected illegal content. Both fields are optional:
+
+```json
+{
+  "category": "copyright infringement",
+  "email": "reporter@example.com"
+}
+```
+
+Available categories are `copyright infringement`, `CSAM`, `terrorism or violent
+extremism`, `threats or harassment`, `personal information`, `malware or phishing`,
+`spam`, and `other illegal content`. Reports and contact emails are visible only to
+authenticated staff.
+
+PasteIndex stores four separate concerns: retained paste records, immutable user
+report events, the current moderation state, and the initial automated assessment.
+The moderation state can be initialized by Jev and subsequently overridden by staff. A moderation state has a
+`decision` (`unreviewed`, `approved`, or `restricted`), `visibility` (`visible`,
+`hidden`, or `deleted`), an optional staff classification reason, and the username
+and timestamp of the most recent moderator. It also records the highest report id
+covered by that action, so a later report reliably returns the paste to the pending
+queue without overwriting the prior staff decision.
+
+Hidden pastes disappear from public views and listings. Every paste read route checks
+visibility before returning metadata or content; a hidden paste is available only
+when the request has a valid staff `Authorization` header. Merely supplying an
+invalid header does not grant access. Deleted pastes have no content body and cannot
+be restored; retained metadata includes the original upload metadata.
+
+### Automated upload moderation
+
+Every valid listed or unlisted upload is assessed after PoW/content verification,
+before its body is made available. `src/jev.mjs` shares the request, response
+validation, and byte limit with the CLI. Uploads wait for the assessment (a
+10-second request timeout); no paid requests are made for invalid uploads, and
+there are no automatic retries or background jobs.
+
+|                                   Result                                  |                       Initial moderation                      |
+|---------------------------------------------------------------------------|---------------------------------------------------------------|
+| `spam`, `phishing`, or `csam`                                             | `restricted` + `hidden`, using the corresponding staff reason |
+| `code`, `plaintext`, or `ascii` with selected-category probability ≥ 0.90 | `unreviewed` + `visible`                                      |
+| Lower-scoring benign result, API error/missing key, or invalid response   | `unreviewed` + `hidden`, pending staff review                 |
+| Image or body over the 248,000-byte single-request cap                    | `unreviewed` + `hidden`, pending staff review                 |
+
+This six-category assessment is not a certification of legality. Model scores are
+not calibrated probabilities. URL **text** is assessed, not its destination; Jev
+never marks a paste staff-approved or enables an automatic URL redirect. Image
+moderation is unsupported by the documented API. Oversized bodies are retained
+intact, not truncated or chunked. Staff can approve/show/classify/delete held pastes.
+
+The new `paste_automoderation` SQLite table retains the assessment JSON (model,
+prompt version, timestamp, category, all probabilities, confidence, usage, billing,
+status, and sanitized diagnostic), whether review is required, and the reviewing
+staff identity/timestamp. It never creates synthetic user reports. The default
+`/admin/pastes` pending queue includes both unacknowledged machine-review tasks and
+new user reports. A staff action acknowledges the machine task without changing
+the original assessment; a later user report still returns the paste to pending.
+Assessments are exposed only in authenticated staff responses/pages.
+
+`POST /api/paste` adds a `moderation` object with `visibility`, `requires_review`,
+and `assessment_status`. For held uploads the browser stays on the upload form and
+shows the assigned ID and review notice instead of navigating to an unavailable
+paste. Existing pastes are not automatically reclassified; the CLI remains read-only.
+
+**Worker key setup:** the CLI shell's `DEFAPI_KEY` is not automatically a Worker
+binding. Copy `.dev.vars.example` to `.dev.vars`, set `DEFAPI_KEY` there, and restart
+`make dev`. Do not commit this file. For production, set the secret interactively:
+
+```bash
+npx wrangler secret put DEFAPI_KEY
+```
+
+`wrangler.jsonc` declares the required secret name, not its value. If it is missing
+at runtime, new uploads remain hidden for staff review. Local uploads also call the
+real, paid DefAPI service. Only text, description, filename, and content type are
+sent; private IP/location/upload audit metadata and PoW are not sent. The upload
+separate moderation consent notice discloses this third-party processing.
+
+### Read
+
+A successful `GET` increments a paste's hit count only when it loads the content:
+raw responses count immediately, while an HTML view counts when its browser fetches
+the content endpoint. An approved URL paste instead returns `302 Found` from its
+canonical CP-Code path and increments the hit count with that redirect. Access-log
+entries record their timestamp, IP address, Cloudflare location fields, HTTP
+`Referer`, and whether the access was an HTML view, JSON metadata request, raw
+response, direct compressed-content request, or redirect. Browser HTML requests are logged
+separately from hit counting so their original external Referer is retained; their
+follow-up content fetch is not logged twice. Initial HTML and JSON metadata requests do not count, and
+`HEAD` reports the current count without incrementing it. The HTML response contains
+metadata and a loading shell but no paste body. Browser JavaScript fetches the gzip
+object, decompresses it, verifies its uncompressed length and SHA-256 hash, and then
+renders plaintext/code, Markdown, PNG/JPEG images, or the URL warning for a URL
+that has not been approved. Verified content and its rendered QR PNG share an entry in a local-storage cache containing
+at most 10 pastes. Revisiting a cached paste renders without fetching the content
+endpoint or incrementing the hit count. JSON metadata exposes `content_url`,
+`content_encoding`, and both compressed and
+uncompressed lengths instead of embedding the plaintext content.
+
+|                          Path                          |                                                Result                                               |
+|--------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `GET /`                                                | New-paste UI                                                                                        |
+| `GET /about`                                           | Service information                                                                                 |
+| `GET /client-info`                                     | IP, network, and location values retained with an upload                                            |
+| `GET /pastes`                                          | Recent public uploads                                                                               |
+| `GET /new`                                             | New-paste UI                                                                                        |
+| `GET /CP………`                                           | `302` redirect for approved URL pastes; otherwise HTML view (browsers) or decompressed raw response |
+| `GET /CP……….<ext>`                                     | Decompressed raw response at its type-specific extension                                            |
+| `GET /api/paste/CP………`                                 | JSON metadata                                                                                       |
+| `GET /api/paste/CP………/content`                         | Exact stored gzip bytes for client-side decompression                                               |
+| `GET /api/pastes?limit=40`                             | Recent uploads (newest first, preview, hit count, and PoW difficulty)                               |
+| `DELETE /api/paste/CP………`                              | Delete using the creator's short-lived token while retaining metadata                               |
+| `POST /api/paste/CP………/report`                         | Report suspected illegal content with an optional category and email                                |
+| `GET /admin/reports`                                   | Redirect to the review panel filtered to all reported pastes                                        |
+| `GET /admin/users`                                     | Staff account list                                                                                  |
+| `GET /admin/access-log?limit=100&before_id=…`          | Paginated paste access log                                                                          |
+| `GET /admin/pastes?reports=pending&limit=100&offset=…` | Filterable moderation review panel                                                                  |
+| `GET /admin/paste/CP………/view`                          | Authenticated content viewer, including hidden/restricted pastes                                    |
+| `GET /admin/paste/CP………/raw`                           | Authenticated decompressed content                                                                  |
+| `GET /admin/paste/CP………/content`                       | Authenticated stored representation for the viewer                                                  |
+| `GET /api/admin/reports?limit=100`                     | Authenticated immutable report events with retained metadata                                        |
+| `GET /api/admin/paste/CP………`                           | Authenticated moderation state and retained metadata                                                |
+| `PATCH /api/admin/paste/CP………`                         | Apply a moderation action and record the authenticated moderator                                    |
+| `GET /api/admin`                                       | Authenticated full paste metadata and user list (JSON)                                              |
+| `GET /api/admin/users`                                 | Authenticated staff user list (JSON)                                                                |
+| `GET /api/admin/access-log?limit=100&before_id=…`      | Authenticated paginated access log (JSON)                                                           |
+
+### Staff interface
+
+The `/admin/*` staff pages use HTTP Basic authentication. The initial accounts are
+`admin` / `4dm1n` with role `admin`, and `moderator` / `hunter2` with role `mod`.
+Both roles can inspect every listed and unlisted paste, private upload metadata,
+proof-of-work and storage fields, hit counts, content links, reports, the access log,
+and staff users. Passwords and password hashes are never included in a response.
+
+`/admin/pastes` is the single moderation workspace. It defaults to user reports and automated assessments that are
+pending review and can filter all reported, never-reported, or all pastes, plus
+reporter reason, staff decision, visibility, and content type. Each row shows every
+reporter-supplied reason and the most recent moderator. **Approve** is one click and
+also makes the paste visible. Choosing a classification such as spam or CSAM submits
+immediately and also hides the paste (open the dropdown, choose the reason). The
+**Hide/Show** button changes visibility with one click without discarding the current
+classification. Paste links open an authenticated `/admin/paste/:id/view` viewer;
+its raw and stored-content requests also stay under `/admin` so browser Basic Auth
+credentials follow them. Staff can inspect hidden/restricted bodies without making
+them public or incrementing hit counts. Deleted bodies remain unavailable to everyone.
+URL pastes are displayed for review, never followed automatically.
+`/admin/reports` remains as a compatibility redirect to the same
+workspace filtered to reported pastes.
+
+The JSON moderation endpoint accepts quick actions (`approve`, `classify`, or
+`toggle_visibility`) or explicit `decision`, `visibility`, and `reason` fields. The
+moderator identity always comes from the authenticated account, never the request
+body. HTML review pages default to 100 records; `limit` accepts 1–1000. Use
+**Previous** and **Next** to page through results. The access-log page similarly uses
+**Older events**, or the API's `next_before_id`, for pagination.
+
+Raw routes are the one read path where the server decompresses the stored object;
+they return plaintext directly (including the base64 data URL for an image paste).
+The `/content` endpoint returns the exact stored representation so browser code can
+decompress and verify it itself.
+
+## Jev classification CLI
+
+Requires Node.js 22+ or `uvx deno`, and an exported `DEFAPI_KEY` (a DefAPI key,
+not a Cloudflare key). If you added it to `~/.bashrc`, use `export DEFAPI_KEY=...`
+there and open a new shell or run `source ~/.bashrc` so child processes can read it.
+
+The Make targets use `uvx deno` and default to the local development server:
+
+```bash
+make dev                          # keep running in another terminal
+make classify                     # latest 20 local public listed pastes
+make classify-paste PASTE_ID=CP0A1B2C
+make classify BASE_URL=https://cp.codes
+make classify BASE_URL=http://127.0.0.1:8787
+```
+
+They access the development Durable Object index and R2 bodies through Wrangler's
+HTTP API, not by opening `.wrangler/state` directly. Override `BASE_URL` for another
+server or port; Deno's network permission follows that host. DefAPI requests still
+go to the real third-party API and incur charges, even for local pastes.
+
+The standalone CLI defaults to `https://cp.codes`; use `--base-url` for local data:
+
+```bash
+npm run classify -- CP0A1B2C       # one paste
+npm run classify                  # latest 20 public listed pastes on https://cp.codes
+npm run classify -- --base-url http://localhost:8787
+node scripts/classify-pastes.mjs > classifications.jsonl
+```
+
+Tests use native `Deno.test` and Deno standard assertions, with Web Crypto and
+`CompressionStream` for fixtures. No Node/npm test runner is used:
+
+```bash
+make test                         # CLI + upload moderation policy tests
+make test-classify
+make test-moderation
+uvx deno test scripts/classify-pastes.test.mjs scripts/automoderation.test.mjs
+```
+
+The tests use injected HTTP fixtures, require no API key or runtime permissions,
+and make no paid API calls.
+
+`scripts/classify-pastes.mjs` reads each paste's metadata and body, verifies its
+length and SHA-256, and calls `typesafe/jev-1.13` via DefAPI's Decisions API.
+One `choice` question selects **spam**, **phishing**, **csam**, **code**,
+**plaintext**, or **ascii**. `ascii` means text art, not merely ASCII-encoded
+text; `plaintext` is the fallback. For overlapping categories, the prompt gives
+CSAM, phishing, and spam priority over format labels. The result includes all six
+probabilities, confidence, token usage, and billing fields. These are model
+estimates, not calibrated probabilities or certifications of safety.
+
+The CLI prints one JSON object per paste to stdout (`classified`, `skipped`, or
+`error`), with diagnostics on stderr. Use the direct `node` command when saving
+JSONL, to avoid npm's script banner. A failed paste does not stop the batch, but
+any error makes the process exit nonzero. This is read-only: it does not change
+staff moderation state. Normal content reads increment paste hit counts.
+
+Only text is assessed. PNG/JPEG pastes are explicitly skipped because the
+provided Jev API documentation does not establish image support. URL destinations
+are not fetched. Bodies larger than **248,000 bytes (~242 KiB)** are skipped rather
+than silently truncated. This default estimates Jev's listed 64,000-token context
+at 4 bytes/token, reserving 2,000 tokens for questions, serialization, and output.
+It is not exact token counting: token-dense code, text art, or other content may
+still exceed the model's context. There is no chunking; use `--max-bytes N` to
+adjust the byte cap. Each HTTP request has a 60-second timeout; there are no
+automatic retries or duplicate paid requests. The key is sent only to DefAPI; request IP,
+location, and other private upload metadata are not included in classification.
+Paste content is sent to a third-party service, so review its data handling terms
+before using this on sensitive content. See `doc/jev-1.13.txt` for the API reference.
+
+## Deploy
+
+```bash
+make deploy
+# create the R2 bucket once if needed:
+# npx wrangler r2 bucket create cp-codes-pastes
+```
