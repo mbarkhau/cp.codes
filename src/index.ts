@@ -44,6 +44,10 @@ import * as contentType from "./content_type";
 import * as admin from "./admin";
 import { getPowDifficultyState } from "./pow_settings";
 import { assessPaste, initialModeration } from "./jev.mjs";
+import { MAX_UPLOAD_BYTES, MAX_REQUEST_BYTES, trafficDifficultyBits, shortIdDifficultyBits } from '../public/policy.js';
+import { clientIp } from './identity';
+import { boundedJson, boundedBytes, BodyLimitError } from './body';
+import { parseBundle, bundleManifest, bundleAssessmentText, bundleFileResponse, type Bundle } from './bundle';
 
 export { MonoClock } from "./mono_clock";
 export { PowKey } from "./pow";
@@ -55,7 +59,10 @@ const MAX_REDIRECT_URL_BYTES = 64 * 1024;
 const MAX_REDIRECT_STORED_BYTES = 256 * 1024;
 
 function json(data: unknown, status = 200, headers?: HeadersInit): Response {
-	return Response.json(data, { status, headers });
+	const responseHeaders = new Headers(headers);
+	if (!responseHeaders.has('cache-control')) responseHeaders.set('cache-control', 'no-store, private');
+	responseHeaders.set('referrer-policy', 'no-referrer');
+	return Response.json(data, { status, headers: responseHeaders });
 }
 
 function error(message: string, status = 400): Response {
@@ -117,6 +124,13 @@ async function decompressGzipExact(
 	return result;
 }
 
+/** Only a server-generated representation may be published. Client gzip header
+ * comments/extra fields/padding are not committed by the plaintext digest. */
+async function canonicalGzip(bytes: Uint8Array): Promise<Uint8Array> {
+	const stream = new Response(bytes).body!.pipeThrough(new CompressionStream('gzip'));
+	return boundedBytes(stream, bytes.length + Math.ceil(bytes.length / 4) + 1024);
+}
+
 function wantsHtml(request: Request): boolean {
 	const accept = request.headers.get("accept") ?? "";
 	if (accept.includes("text/html")) return true;
@@ -138,7 +152,7 @@ function cfString(value: unknown): string | null {
 function uploadMetadataFromRequest(request: Request): paste.PasteUploadMetadata {
 	const cf = request.cf;
 	return {
-		"cf-connecting-ip": headerValue(request, "cf-connecting-ip"),
+		"cf-connecting-ip": clientIp(request),
 		"x-real-ip": headerValue(request, "x-real-ip"),
 		"cf-ipcountry": headerValue(request, "cf-ipcountry"),
 		asn:
@@ -166,7 +180,7 @@ function pasteAccessFromRequest(
 	const cf = request.cf;
 	return {
 		accessed_at: new Date().toISOString(),
-		ip: headerValue(request, "cf-connecting-ip") ?? headerValue(request, "x-real-ip"),
+		ip: clientIp(request),
 		referer: headerValue(request, "referer"),
 		kind,
 		location: {
@@ -287,10 +301,11 @@ function debugPayload(
 async function handleChallenge(request: Request, env: Env): Promise<Response> {
 	let body: unknown;
 	try {
-		body = await request.json();
-	} catch {
-		return error("invalid JSON body");
+		body = await boundedJson(request, 4096);
+	} catch (err) {
+		return error('invalid JSON body', err instanceof BodyLimitError ? 413 : 400);
 	}
+	if (!body || typeof body !== 'object' || Array.isArray(body)) return error('body must be an object');
 	const rec = body as Record<string, unknown>;
 	const contentHash = rec.content_hash;
 	const byteLength = rec.byte_length;
@@ -302,17 +317,28 @@ async function handleChallenge(request: Request, env: Env): Promise<Response> {
 		return error("byte_length must be a positive safe integer");
 	}
 
-	const state = await getPowDifficultyState(env);
-	// SHA-256 has only 256 output bits. At that point a valid proof requires an
-	// all-zero digest, so larger pastes need no artificial byte limit.
+	if (byteLength > MAX_UPLOAD_BYTES) return error(`Upload exceeds ${MAX_UPLOAD_BYTES} bytes`, 413);
+	const ip = clientIp(request);
+	if (!ip) return error('Trusted edge IP identity is unavailable. Check the service proxy configuration.', 403);
+	const requesterHash = await pow.sha256Hex(ip);
+	const gate = pow.powKeyStub(env);
+	if (!await gate.allowChallenge(requesterHash)) return json({ error: 'Too many challenges. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
+	if (!await gate.canAffordUpload(byteLength, requesterHash)) return json({ error: 'Upload cost budget reached. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
+	const resolved = region.regionFromRequest(request);
+	const [state, ipUnits, shortIds] = await Promise.all([
+		getPowDifficultyState(env), gate.getAdmissionUnits(requesterHash),
+		monoClock(env, resolved).shortIdCount(cpCode.TIME_RESOLUTION),
+	]);
 	const difficulty = Math.min(
 		pow.MAX_POW_DIFFICULTY_BITS,
-		state.current_difficulty_bits + paste.pasteSizeDifficultyBits(byteLength),
+		state.current_difficulty_bits + trafficDifficultyBits(ipUnits) + paste.pasteSizeDifficultyBits(byteLength) +
+			shortIdDifficultyBits(shortIds, state.short_id_increment),
 	);
 	const challenge = await pow.issueChallenge(env, {
 		contentHash,
 		byteLength,
 		difficulty,
+		requesterHash,
 	});
 	return json(challenge);
 }
@@ -320,21 +346,20 @@ async function handleChallenge(request: Request, env: Env): Promise<Response> {
 async function handleCreatePaste(request: Request, env: Env): Promise<Response> {
 	let body: unknown;
 	try {
-		body = await request.json();
-	} catch {
-		return error("invalid JSON body");
+		body = await boundedJson(request, MAX_REQUEST_BYTES);
+	} catch (err) {
+		return error('invalid JSON body', err instanceof BodyLimitError ? 413 : 400);
 	}
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		return error("body must be an object");
 	}
 	const rec = body as Record<string, unknown>;
-	const compressedContent = decodeBase64(rec.content_gzip);
+	const encodedContent = rec.content_gzip;
 	const compression = rec.compression;
 	const signedChallenge = rec.challenge;
 	const solution = rec.solution;
 	const powHash = rec.pow_hash;
 	const contentTypeChoice = rec.content_type;
-	const descriptionValue = rec.description;
 	const filenameValue = rec.filename;
 	const unlistedValue = rec.unlisted ?? false;
 	const consentValue = rec.consent;
@@ -349,26 +374,17 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 	if (compression !== "gzip") {
 		return error("compression must be gzip");
 	}
-	if (!compressedContent) {
+	if (typeof encodedContent !== 'string' || !encodedContent.length) {
 		return error("content_gzip must be non-empty base64-encoded gzip data");
 	}
-	if (descriptionValue != null && typeof descriptionValue !== "string") {
-		return error("description must be a string");
-	}
+	if (Object.hasOwn(rec, 'description')) return error('descriptions are not supported');
 	if (filenameValue != null && typeof filenameValue !== "string") {
 		return error("filename must be a string");
 	}
 	if (typeof unlistedValue !== "boolean") {
 		return error("unlisted must be a boolean");
 	}
-	const description = typeof descriptionValue === "string" ? descriptionValue.trim() || null : null;
 	const filename = typeof filenameValue === "string" ? filenameValue.trim() || null : null;
-	if (description && description.length > paste.MAX_DESCRIPTION_CHARS) {
-		return error(`description exceeds ${paste.MAX_DESCRIPTION_CHARS} characters`);
-	}
-	if (description?.includes("\u0000")) {
-		return error("description must not contain NUL characters");
-	}
 	if (filename && filename.length > paste.MAX_FILENAME_CHARS) {
 		return error(`filename exceeds ${paste.MAX_FILENAME_CHARS} characters`);
 	}
@@ -396,6 +412,12 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 	if (!challenge) {
 		return error("challenge is invalid, forged, or expired", 403);
 	}
+	if (challenge.byte_length > MAX_UPLOAD_BYTES) return error('Upload exceeds the size limit', 413);
+	const maximumCompressedBytes = challenge.byte_length + Math.ceil(challenge.byte_length / 4) + 1024;
+	if (encodedContent.length > 4 * Math.ceil(maximumCompressedBytes / 3)) {
+		return error('Compressed input has excessive overhead or padding', 413);
+	}
+	if (challenge.requester_hash !== await pow.sha256Hex(clientIp(request) ?? 'unknown')) return error('Challenge belongs to a different IP', 403);
 
 	// Content detection and URL interpretation are client responsibilities. The
 	// server stores only the client's resolved type and never renders content.
@@ -428,6 +450,16 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 		);
 	}
 
+	// Reserve before expensive inflation and paid moderation. Atomic revalidation
+	// makes prefetched cheap challenges unusable after traffic/cost increases.
+	const admitted = await pow.powKeyStub(env).admit(challenge, pow.powConfigFromEnv(env).difficultyBits);
+	if (admitted === 'budget') return json({ error: 'Upload cost budget reached. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
+	if (admitted === 'replay') return error('challenge already used', 409);
+	if (admitted === 'stale') return error('Upload price changed; request a fresh challenge', 409);
+
+	const compressedContent = decodeBase64(encodedContent);
+	if (!compressedContent) return error('content_gzip must be non-empty base64-encoded gzip data');
+	if (compressedContent.length > maximumCompressedBytes) return error('Compressed input has excessive overhead or padding', 413);
 	let uncompressedBytes: Uint8Array;
 	try {
 		uncompressedBytes = await decompressGzipExact(compressedContent, challenge.byte_length);
@@ -449,11 +481,14 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 		return error("content does not match challenge content_hash", 400);
 	}
 
-	const claimed = await pow.powKeyStub(env).redeem(challenge.challenge_id, challenge.expires_at);
-	if (!claimed) {
-		return error("challenge already used", 409);
+	let bundle: Bundle | null = null;
+	if (rec.format != null && rec.format !== 'bundle-v1') return error('Unsupported upload format');
+	if (rec.format === 'bundle-v1') {
+		try { bundle = parseBundle(content); } catch (err) { return error(err instanceof Error ? err.message : 'Invalid file bundle'); }
 	}
 
+	// Strip every client-controlled gzip side channel before publication.
+	const storedGzip = await canonicalGzip(uncompressedBytes);
 	const leadingZeroBits = pow.leadingZeroBits(expected);
 	const idVersion = unlistedValue ? cpCode.VERSION_2 : cpCode.VERSION_0;
 	const { id, parts, resolved } = await mintId(env, request, idVersion);
@@ -465,9 +500,10 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 		created_at: new Date().toISOString(),
 		region_id: parts.region_id,
 		region: region.idToHint(parts.region_id),
-		content_type: resolvedContentType,
-		description,
-		filename,
+		content_type: bundle?.files.find(file => file.name === bundle.primary)!.content_type ?? resolvedContentType,
+		description: null,
+		filename: bundle?.primary ?? filename,
+		...(bundle ? { format: 'bundle-v1' as const, primary: bundle.primary, files: await bundleManifest(bundle) } : {}),
 		unlisted: unlistedValue,
 		upload_metadata: uploadMetadata,
 		proof_of_work: {
@@ -486,14 +522,17 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 	// Evaluate the already verified/decompressed buffer once, before publishing.
 	// Failures, uncertain results, images, and over-context pastes are held for
 	// staff review. No external I/O occurs inside a DO concurrency block.
-	const assessment = await assessPaste(meta, content, env.DEFAPI_KEY);
+	const combined = bundle ? bundleAssessmentText(bundle) : null;
+	const assessmentText = combined?.content ?? content;
+	const assessment = await assessPaste({ ...meta, content_type: combined?.unsupported ? 'png' : meta.content_type,
+		byte_length: new TextEncoder().encode(assessmentText).length }, assessmentText, env.DEFAPI_KEY);
 	const moderation = initialModeration(assessment);
 	await paste.putPaste(
 		env,
 		meta,
-		compressedContent,
+		storedGzip,
 		{ tokenHash: deletionTokenHash, expiresAt: deletionExpiresAt },
-		paste.makePreview(content),
+		paste.makePreview(bundle?.files.find(file => file.name === bundle.primary)?.content ?? content),
 		assessment,
 	);
 
@@ -510,7 +549,7 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 			region_id: parts.region_id,
 			region: meta.region,
 			byte_length: meta.byte_length,
-			compressed_byte_length: compressedContent.byteLength,
+			compressed_byte_length: storedGzip.byteLength,
 			content_encoding: "gzip",
 			sha256: meta.sha256,
 			created_at: meta.created_at,
@@ -519,7 +558,12 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 			filename: meta.filename,
 			unlisted: meta.unlisted,
 			hit_count: 0,
+			format: meta.format ?? 'single',
+			files: meta.files,
+			primary: meta.primary,
 			moderation: {
+				state: moderation.visibility === 'visible' ? 'limited' : 'review',
+				message: moderation.visibility === 'visible' ? 'Ready for you and three other IPs. Wider sharing requires human review.' : 'Stored safely; waiting for human review.',
 				visibility: moderation.visibility,
 				requires_review: moderation.requires_review,
 				assessment_status: assessment.status,
@@ -549,14 +593,18 @@ async function unavailablePasteResponse(
 	env: Env,
 	moderation: paste.PasteModeration,
 	mode: "html" | "raw" | "json",
+	bodyRequest = false,
 ): Promise<Response | null> {
-	if (moderation.visibility === "visible") return null;
-	// Staff can still inspect hidden content while reviewing it. Deleted bodies
-	// are unavailable to everyone, including staff.
 	const staff = await admin.authenticateStaff(request, env);
-	if (moderation.visibility === "hidden" && staff) return null;
-	if (mode === "html") return ui.notFoundPage("This paste is not available", Boolean(staff));
-	return json({ error: "paste not found" }, 404, { "cache-control": "no-store, private", vary: "Cookie, Authorization" });
+	if (moderation.visibility !== 'deleted' && staff) return null;
+	const retained = await paste.getRetainedPaste(env, moderation.paste_id);
+	const access = await paste.pasteIndexStub(env).authorizeAccess(moderation.paste_id, clientIp(request),
+		bodyRequest && request.method === 'GET' ? retained?.metadata.byte_length ?? 0 : 0, request.method === 'GET');
+	if (access.allowed) return null;
+	const status = moderation.visibility === 'visible' && retained ? 423 : 404;
+	if (mode === 'html') return ui.reviewRequiredPage(moderation.paste_id, access.reason, status);
+	return json({ error: status === 404 ? 'paste not found' : access.reason, moderation: { state: access.state } }, status,
+		{ 'cache-control': 'no-store, private', vary: 'Cookie, Authorization', 'referrer-policy': 'no-referrer' });
 }
 
 async function redirectTargetFromPaste(object: paste.StoredPasteObject): Promise<URL> {
@@ -622,7 +670,7 @@ async function handleGetPaste(
 	}
 
 	const moderation = await paste.getPasteModeration(env, id);
-	const unavailable = await unavailablePasteResponse(request, env, moderation, mode);
+	const unavailable = await unavailablePasteResponse(request, env, moderation, mode, mode === 'raw');
 	if (unavailable) return unavailable;
 
 	const object = mode === "raw" && request.method === "GET"
@@ -644,7 +692,7 @@ async function handleGetPaste(
 		(request.method === "GET" || request.method === "HEAD") &&
 		mode !== "json" &&
 		requestedContentType === undefined &&
-		stored.content_type === "url" &&
+		!stored.format && stored.content_type === "url" &&
 		moderation.decision === "approved"
 	) {
 		const redirectObject = object ?? await paste.getPasteObject(env, id);
@@ -690,6 +738,10 @@ async function handleGetPaste(
 		hitCount = await paste.getPasteHitCount(env, id);
 	}
 
+	if (mode === 'raw' && stored.format === 'bundle-v1') {
+		return bundleFileResponse(request, object, stored, stored.primary ?? '', hitCount);
+	}
+
 	if (mode === "raw") {
 		const headers = new Headers({
 			"content-type": contentType.rawContentType(stored.content_type),
@@ -710,6 +762,8 @@ async function handleGetPaste(
 	if (mode === "json") {
 		return json({
 			id: stored.id,
+			format: stored.format ?? 'single', files: stored.files, primary: stored.primary,
+			moderation: { state: moderation.decision === 'approved' ? 'approved' : 'limited', ...(await paste.pasteIndexStub(env).getSharing(id)) },
 			content_url: `/api/paste/${stored.id}/content`,
 			content_encoding: stored.content_encoding,
 			compressed_byte_length: stored.compressed_byte_length,
@@ -727,7 +781,9 @@ async function handleGetPaste(
 		}, 200, { "cache-control": "no-store" });
 	}
 
-	return ui.viewPage(stored, hitCount, Boolean(await admin.authenticateStaff(request, env)), moderation.visibility === "hidden");
+	const sharing = await paste.pasteIndexStub(env).getSharing(id);
+	return ui.viewPage(stored, hitCount, Boolean(await admin.authenticateStaff(request, env)), moderation.visibility === "hidden",
+		moderation.decision === 'approved' ? 'approved' : sharing.escalated ? 'owner-review' : 'limited');
 }
 
 /** Serve the exact R2 representation for client-side decompression. */
@@ -738,7 +794,7 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 		return error(err instanceof Error ? err.message : "invalid id", 400);
 	}
 	const moderation = await paste.getPasteModeration(env, id);
-	const unavailable = await unavailablePasteResponse(request, env, moderation, "raw");
+	const unavailable = await unavailablePasteResponse(request, env, moderation, "raw", true);
 	if (unavailable) return unavailable;
 	const object = request.method === "GET" ? await paste.getPasteObject(env, id) : null;
 	const stored = object?.metadata ?? await paste.getPasteMetadata(env, id);
@@ -761,6 +817,7 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 			"content-type": stored.content_encoding === "gzip"
 				? "application/gzip"
 				: "text/plain; charset=utf-8",
+			'content-security-policy': "sandbox; default-src 'none'",
 			"content-length": String(stored.compressed_byte_length),
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
@@ -772,10 +829,26 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 	});
 }
 
+async function handleBundleFile(request: Request, env: Env, id: string, encodedName: string): Promise<Response> {
+	let name: string;
+	try { cpCode.parseCpCode(id); name = decodeURIComponent(encodedName); } catch { return error('File not found', 404); }
+	const retained = await paste.getRetainedPaste(env, id);
+	if (!retained?.metadata.files?.some(file => file.name === name)) return error('File not found', 404);
+	const unavailable = await unavailablePasteResponse(request, env, retained.moderation, 'raw', true);
+	if (unavailable) return unavailable;
+	const object = request.method === 'GET' ? await paste.getPasteObject(env, id) : null;
+	const stored = object?.metadata ?? (request.method === 'HEAD' ? await paste.getPasteMetadata(env, id) : null);
+	if (!stored) return error('Paste not found', 404);
+	const hits = request.method === 'GET' ? await paste.recordPasteAccess(env, id, pasteAccessFromRequest(request, 'raw')) : await paste.getPasteHitCount(env, id);
+	return bundleFileResponse(request, object, stored, name, hits);
+}
+
 async function handleReportPaste(request: Request, env: Env, id: string): Promise<Response> {
+	const requester = await pow.sha256Hex(`report:${clientIp(request) ?? 'unknown'}`);
+	if (!await pow.powKeyStub(env).allowChallenge(requester)) return json({ error: 'Too many reports' }, 429, { 'retry-after': '600' });
 	let body: unknown;
 	try {
-		body = await request.json();
+		body = await boundedJson(request, 4096);
 	} catch {
 		return error("invalid JSON body");
 	}
@@ -813,7 +886,7 @@ async function handleReportPaste(request: Request, env: Env, id: string): Promis
 async function handleDeletePaste(request: Request, env: Env, id: string): Promise<Response> {
 	let body: unknown;
 	try {
-		body = await request.json();
+		body = await boundedJson(request, 4096);
 	} catch {
 		return error("invalid JSON body");
 	}
@@ -850,8 +923,7 @@ async function handleListPastes(url: URL, env: Env): Promise<Response> {
 	});
 }
 
-export default {
-	async fetch(request, env, ctx): Promise<Response> {
+async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const path = url.pathname.replace(/\/+$/, "") || "/";
 		const method = request.method;
@@ -915,6 +987,12 @@ export default {
 			return handleListPastes(url, env);
 		}
 
+		const fileRoute = path.match(/^\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/files\/([^/]+)$/);
+		if (fileRoute) {
+			if (method !== 'GET' && method !== 'HEAD') return error('Method Not Allowed', 405);
+			return handleBundleFile(request, env, fileRoute[1]!.toUpperCase(), fileRoute[2]!);
+		}
+
 		const apiPasteReport = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/report$/);
 		if (apiPasteReport) {
 			if (method !== "POST") return error("Method Not Allowed", 405);
@@ -947,8 +1025,11 @@ export default {
 
 		if (path === "/pastes") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			const recent = await paste.listRecentPastes(env);
-			return ui.pastesPage(recent, Boolean(await admin.authenticateStaff(request, env)));
+			const rawPage = url.searchParams.get('page') ?? '1';
+			const page = Number(rawPage);
+			if (!/^[1-9]\d*$/.test(rawPage) || !Number.isSafeInteger(page)) return error('page must be a positive safe integer');
+			const listing = await paste.listPublicPastesPage(env, page);
+			return ui.pastesPage(listing, Boolean(await admin.authenticateStaff(request, env)));
 		}
 
 		if (path === "/client-info") {
@@ -1001,5 +1082,15 @@ export default {
 
 		if (wantsHtml(request)) return ui.notFoundPage("Not found", Boolean(await admin.authenticateStaff(request, env)));
 		return error("Not Found", 404);
+}
+
+export default {
+	async fetch(request, env, ctx): Promise<Response> {
+		try { return await routeRequest(request, env, ctx); }
+		catch {
+			// Never log request bodies, credentials, or arbitrary provider errors.
+			console.error(JSON.stringify({ service: 'cp.codes', event: 'request_failed', method: request.method }));
+			return error('The service could not complete this request. Please try again.', 503);
+		}
 	},
 } satisfies ExportedHandler<Env>;

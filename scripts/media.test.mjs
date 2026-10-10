@@ -33,9 +33,9 @@ function browser({ decodeFails = false } = {}) {
 	const contentEl = { value: "", focus() {}, setSelectionRange() {} };
 	const filenameEl = { value: "", maxLength: 255 };
 	const context = vm.createContext({
-		atob, Uint8Array, Image, contentEl, filenameEl,
+		atob, Uint8Array, TextDecoder, Image, contentEl, filenameEl,
 		MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType,
-		document: { createElement: (tag) => tag === "img" ? new Image() : new Element(tag) },
+		document: { getElementById: () => null, createElement: (tag) => tag === "img" ? new Image() : new Element(tag) },
 		bytesToBase64: (bytes) => Buffer.from(bytes).toString("base64"),
 		updateBytes: () => Buffer.byteLength(contentEl.value),
 		setStatus: (...args) => statuses.push(args),
@@ -95,6 +95,16 @@ test("malformed GIF/MP3/MP4 signatures and unrelated ftyp brands are rejected", 
 	for (const type of ["gif", "mp3", "mp4"]) {
 		assert.equal(mediaDataUrlType(`data:${MEDIA_MIME_TYPES[type]};base64,YWJj`), null);
 	}
+});
+
+test('file selection preserves UTF-8/BOM despite unfamiliar MIME types and rejects binary controls', async () => {
+	const text = '\ufeffconfiguration = true\n'; const bytes = Buffer.from(text);
+	const app = browser();
+	await app.context.loadFile({ name: 'settings.config', type: 'application/octet-stream', size: bytes.length, arrayBuffer: async () => bytes });
+	assert.equal(app.contentEl.value, text); assert.equal(app.filenameEl.value, 'settings.config');
+	const binary = browser(); const controls = Buffer.from('\u0001'.repeat(9));
+	await binary.context.loadFile({ name: 'opaque.bin', type: '', size: controls.length, arrayBuffer: async () => controls });
+	assert.equal(binary.contentEl.value, ''); assert.match(binary.statuses.at(-1)[0], /binary/);
 });
 
 test("browser uploads media losslessly without trying to decode audio/video as images", async () => {
@@ -162,7 +172,7 @@ test("browser publish submits encoded media with the matching type and body-boun
 		b.contentEl.value = dataUrl(media);
 		Object.assign(b.context, {
 			TextEncoder, isBusy: false, consentEl: { checked: true }, moderationConsentEl: { checked: true },
-			descriptionEl: { value: "" }, listedEl: { checked: true },
+			listedEl: { checked: true },
 			updateDetection: () => media.type, setBusy() {}, storeDeletionGrant: () => true,
 			sha256Hex: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
 			gzip: async (bytes) => gzipSync(bytes), MAX_POW_SUBMISSION_ATTEMPTS: 1,

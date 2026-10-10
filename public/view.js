@@ -41,20 +41,15 @@ async function sha256Hex(bytes) {
 		.join("");
 }
 
-async function renderMarkdown(content) {
-	const { default: MarkdownIt } = await import("https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/+esm");
-	const markdown = new MarkdownIt({ html: false, linkify: true, typographer: false });
-	const defaultLinkOpen = markdown.renderer.rules.link_open;
-	markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
-		tokens[index].attrSet("rel", "nofollow noopener noreferrer");
-		return defaultLinkOpen
-			? defaultLinkOpen(tokens, index, options, env, self)
-			: self.renderToken(tokens, index, options);
-	};
-	const article = document.createElement("article");
-	article.className = "markdown-body";
-	article.innerHTML = markdown.render(content);
-	return article;
+async function renderMarkdown(content, attachments = new Map()) {
+	try {
+		const { markdownElement } = await import('./markdown.js?v=1');
+		return await markdownElement(content, attachments);
+	} catch {
+		const pre = document.createElement('pre'); pre.className = 'paste';
+		pre.textContent = content; pre.title = 'Markdown preview unavailable; showing source instead';
+		return pre;
+	}
 }
 
 function renderUrl(content) {
@@ -171,8 +166,8 @@ async function renderMedia(content, contentType) {
 	return wrapper;
 }
 
-async function renderPasteContent(content, contentType) {
-	if (contentType === "markdown") return renderMarkdown(content);
+async function renderPasteContent(content, contentType, attachments) {
+	if (contentType === "markdown") return renderMarkdown(content, attachments);
 	if (contentType === "url") return renderUrl(content);
 	if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(contentType)) return renderMedia(content, contentType);
 	const pre = document.createElement("pre");
@@ -275,6 +270,77 @@ function updateHitCount(response) {
 	host.textContent = `${count.toLocaleString("en-US")} ${count === 1 ? "hit" : "hits"}`;
 }
 
+async function readPasteBytes(stream, maximum) {
+	const reader = stream.getReader(); const chunks = []; let length = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read(); if (done) break;
+			length += value.byteLength;
+			if (length > maximum) { await reader.cancel(); throw new Error('Paste exceeds its declared byte length'); }
+			chunks.push(value);
+		}
+	} finally { reader.releaseLock(); }
+	const result = new Uint8Array(length); let offset = 0;
+	for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+	return result;
+}
+
+let currentCopyContent = null;
+async function renderBundle(container, host) {
+	const bundle = JSON.parse(container);
+	if (bundle.format !== 'bundle-v1' || !Array.isArray(bundle.files) || bundle.files.length > 16) throw new Error('Invalid bundle');
+	const attachments = new Map();
+	const urls = [];
+	for (const file of bundle.files) {
+		let blob;
+		const image = ['png', 'jpeg', 'webp', 'gif'].includes(file.content_type);
+		if (MEDIA_MIME_TYPES[file.content_type]) {
+			const match = /^data:([^;]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(file.content);
+			if (!match || match[1] !== MEDIA_MIME_TYPES[file.content_type]) throw new Error('Invalid media file');
+			blob = new Blob([Uint8Array.from(atob(match[2]), c => c.charCodeAt(0))], { type: match[1] });
+		} else blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+		const url = URL.createObjectURL(blob); urls.push(url);
+		attachments.set(file.name, { url, image });
+	}
+	for (const section of document.querySelectorAll('.paste-file-metadata')) {
+		const attachment = attachments.get(section.dataset.fileName);
+		const download = section.querySelector('.file-download');
+		const links = section.querySelector('.paste-file-links');
+		if (!attachment || !(download instanceof HTMLAnchorElement) || !(links instanceof HTMLElement)) continue;
+		download.href = attachment.url;
+		download.download = section.dataset.fileName;
+		links.hidden = false;
+	}
+	addEventListener('pagehide', (event) => { if (!event.persisted) urls.forEach(url => URL.revokeObjectURL(url)); }, { once: true });
+	const nav = document.getElementById('paste-file-nav');
+	let selection = 0;
+	async function select(file) {
+		const version = ++selection;
+		const rendered = await renderPasteContent(file.content, file.content_type, attachments);
+		if (version !== selection) return;
+		host.replaceChildren(rendered); currentCopyContent = file.content;
+		for (const button of nav?.querySelectorAll('button') ?? []) button.setAttribute('aria-pressed', String(button.dataset.name === file.name));
+		const info = document.getElementById('selected-file-info');
+		if (info) info.textContent = `${file.name} · ${file.content_type}`;
+		const raw = document.getElementById('raw-paste');
+		if (raw instanceof HTMLAnchorElement) {
+			raw.href = host.dataset.staffReview === 'true' ? attachments.get(file.name).url : `/${host.dataset.cpCode}/files/${encodeURIComponent(file.name)}`;
+			raw.title = `View raw content: ${file.name}`;
+			raw.setAttribute('aria-label', raw.title);
+		}
+		void import('./highlight.js?v=1').then(({ highlightPaste }) => highlightPaste(rendered)).catch(() => {});
+	}
+	for (const file of bundle.files) {
+		const button = document.createElement('button'); button.type = 'button'; button.textContent = file.name; button.dataset.name = file.name;
+		button.addEventListener('click', () => { void select(file).catch(error => { const p = document.createElement('p'); p.textContent = error.message; host.replaceChildren(p); }); });
+		nav?.append(button);
+	}
+	const primary = bundle.files.find(file => file.name === bundle.primary);
+	if (!primary) throw new Error('Primary file missing');
+	await select(primary);
+	return primary.content;
+}
+
 async function initializePasteContent() {
 	const host = document.getElementById("paste-content");
 	const copyButton = document.getElementById("copy-paste");
@@ -291,12 +357,9 @@ async function initializePasteContent() {
 
 		// Staff-only bodies must not enter the public viewer's persistent cache.
 		const staffReview = host.dataset.staffReview === "true";
-		let content = staffReview ? null : await getCachedPasteContent(
-			cpCode,
-			contentType,
-			expectedByteLength,
-			expectedHash,
-		);
+		// Always reauthorize at the server. A persistent content cache would let a
+		// browser bypass a later restriction or traffic escalation.
+		let content = null;
 		const cacheHit = content !== null;
 		if (!cacheHit) {
 			const response = await fetch(contentUrl, { headers: { accept: "application/gzip" } });
@@ -315,7 +378,7 @@ async function initializePasteContent() {
 				throw new Error(`Unsupported content encoding: ${encoding}`);
 			}
 
-			const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+			const bytes = await readPasteBytes(stream, expectedByteLength);
 			if (bytes.byteLength !== expectedByteLength) {
 				throw new Error(`Paste length check failed (${bytes.byteLength} != ${expectedByteLength})`);
 			}
@@ -326,6 +389,13 @@ async function initializePasteContent() {
 			content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
 		}
 
+		if (host.dataset.format === 'bundle-v1') {
+			const primaryContent = await renderBundle(content, host);
+			host.setAttribute('aria-busy', 'false');
+			if (copyButton instanceof HTMLButtonElement) copyButton.disabled = false;
+			return primaryContent;
+		}
+		currentCopyContent = content;
 		const rendered = await renderPasteContent(content, contentType);
 		host.replaceChildren(rendered);
 		host.setAttribute("aria-busy", "false");
@@ -336,9 +406,7 @@ async function initializePasteContent() {
 				.then(({ highlightPaste }) => highlightPaste(rendered))
 				.catch((error) => console.warn("Syntax highlighting unavailable", error));
 		}
-		if (!cacheHit && !staffReview) {
-			cachePasteContent(cpCode, contentType, expectedByteLength, expectedHash, content);
-		}
+		removeCachedPastePart(cpCode, 'content');
 		return content;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -352,27 +420,49 @@ async function initializePasteContent() {
 	}
 }
 
+const actionFeedbackTimers = new WeakMap();
+
+function showActionFeedback(status, message, kind = '') {
+	if (!(status instanceof HTMLElement)) return;
+	const previous = actionFeedbackTimers.get(status);
+	if (previous) {
+		clearTimeout(previous.fade);
+		clearTimeout(previous.clear);
+	}
+	const region = status.closest('[role="status"]') ?? status;
+	region.classList.toggle('ok', kind === 'ok');
+	region.classList.toggle('err', kind === 'err');
+	status.classList.add('action-feedback');
+	status.classList.remove('is-fading');
+	status.textContent = message;
+	status.title = message;
+	actionFeedbackTimers.set(status, {
+		fade: setTimeout(() => status.classList.add('is-fading'), 5000),
+		clear: setTimeout(() => {
+			status.textContent = '';
+			status.removeAttribute('title');
+			actionFeedbackTimers.delete(status);
+		}, 6000),
+	});
+}
+
 function initializePasteCopy(contentPromise) {
 	const button = document.getElementById("copy-paste");
-	if (!(button instanceof HTMLButtonElement)) return;
+	const status = document.getElementById("paste-action-status");
+	if (!(button instanceof HTMLButtonElement) || !(status instanceof HTMLElement)) return;
 
 	button.addEventListener("click", async () => {
 		button.disabled = true;
 		try {
-			const content = await contentPromise;
+			const initialContent = await contentPromise;
+			const content = currentCopyContent ?? initialContent;
 			if (typeof content !== "string") throw new Error("Paste content is unavailable");
 			await writeToClipboard(content);
-			button.textContent = "Copied";
-			button.title = "Paste content copied to clipboard";
+			showActionFeedback(status, 'Content copied.', 'ok');
 		} catch (error) {
-			button.textContent = "Failed";
-			button.title = error instanceof Error ? error.message : String(error);
+			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
 		} finally {
-			setTimeout(() => {
-				button.textContent = "Copy";
-				button.title = "";
-				button.disabled = false;
-			}, 1800);
+			button.disabled = false;
 		}
 	});
 }
@@ -381,7 +471,7 @@ function initializePasteDeletion() {
 	const host = document.getElementById("paste-delete");
 	const button = document.getElementById("delete-paste");
 	const countdown = document.getElementById("delete-countdown");
-	const status = document.getElementById("delete-status");
+	const status = document.getElementById("paste-action-status") ?? document.getElementById("delete-status");
 	if (
 		!(host instanceof HTMLElement) ||
 		!(button instanceof HTMLButtonElement) ||
@@ -432,6 +522,7 @@ function initializePasteDeletion() {
 		}
 		const minutes = Math.floor(seconds / 60);
 		countdown.textContent = `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+		button.title = `Delete paste (${countdown.textContent} remaining)`;
 		return true;
 	};
 
@@ -443,8 +534,7 @@ function initializePasteDeletion() {
 		if (!updateCountdown()) return;
 		if (!confirm(`Delete ${cpCode}? This cannot be undone.`)) return;
 		button.disabled = true;
-		status.className = "status";
-		status.textContent = "Deleting…";
+		showActionFeedback(status, 'Deleting…');
 		try {
 			const response = await fetch(`/api/paste/${encodeURIComponent(cpCode)}`, {
 				method: "DELETE",
@@ -464,8 +554,7 @@ function initializePasteDeletion() {
 			removeGrant();
 			window.location.replace("/");
 		} catch (error) {
-			status.className = "status err";
-			status.textContent = error instanceof Error ? error.message : String(error);
+			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
 			button.disabled = false;
 		}
 	});
@@ -482,8 +571,7 @@ function initializePasteReport() {
 		event.preventDefault();
 		if (!form.reportValidity()) return;
 		if (submit instanceof HTMLButtonElement) submit.disabled = true;
-		status.className = "status";
-		status.textContent = "Submitting…";
+		showActionFeedback(status, 'Submitting…');
 		const data = new FormData(form);
 		try {
 			const response = await fetch(`/api/paste/${encodeURIComponent(cpCode)}/report`, {
@@ -502,20 +590,47 @@ function initializePasteReport() {
 			}
 			if (!response.ok) throw new Error(result?.error || `report failed (${response.status})`);
 			form.reset();
-			status.className = "status ok";
-			status.textContent = "Report submitted. Thank you.";
+			showActionFeedback(status, 'Report submitted. Thank you.', 'ok');
 		} catch (error) {
-			status.className = "status err";
-			status.textContent = error instanceof Error ? error.message : String(error);
+			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
 			if (submit instanceof HTMLButtonElement) submit.disabled = false;
 		}
 	});
 }
 
+function initializePasteDialogs() {
+	for (const button of document.querySelectorAll('[data-dialog]')) {
+		const dialog = document.getElementById(button.dataset.dialog);
+		if (!(dialog instanceof HTMLDialogElement)) continue;
+		button.addEventListener('click', () => dialog.showModal());
+	}
+	for (const dialog of document.querySelectorAll('dialog.paste-dialog')) {
+		dialog.querySelector('[data-close-dialog]')?.addEventListener('click', () => dialog.close());
+		dialog.addEventListener('click', (event) => {
+			if (event.target !== dialog) return;
+			const bounds = dialog.getBoundingClientRect();
+			if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+		});
+	}
+}
+
+document.getElementById('copy-link')?.addEventListener('click', async () => {
+	const status = document.getElementById('paste-action-status');
+	const id = document.getElementById('paste-content')?.dataset.cpCode;
+	if (!(status instanceof HTMLElement) || !id) return;
+	try {
+		await writeToClipboard(`${location.origin}/${id}`);
+		showActionFeedback(status, 'Link copied.', 'ok');
+	} catch {
+		showActionFeedback(status, 'Clipboard unavailable; copy the address bar.', 'err');
+	}
+});
+
 const pasteContentPromise = initializePasteContent();
 initializePasteCopy(pasteContentPromise);
 initializePasteDeletion();
 initializePasteReport();
+initializePasteDialogs();
 
 function firstPaintTiming(timestamp) {
 	const firstPaint = performance.getEntriesByName("first-paint", "paint")[0];

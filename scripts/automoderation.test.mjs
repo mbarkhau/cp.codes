@@ -35,7 +35,32 @@ for (const category of ["code", "plaintext", "ascii"]) {
 	});
 }
 
-for (const [category, reason] of [["spam", "spam"], ["phishing", "malware or phishing"], ["csam", "CSAM"]]) {
+Deno.test("dated Jev revisions are retained and use the same moderation policy", async () => {
+	const model = `${MODEL}-20260917`;
+	for (const [category, visibility] of [["code", "visible"], ["unsafe", "hidden"]]) {
+		const result = { ...answer(category), model };
+		assertEquals(validateDecision(result).model, model);
+		const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(result) });
+		assertEquals(assessment.status, "classified");
+		assertEquals(assessment.model, model);
+		assertEquals(initialModeration(assessment).visibility, visibility);
+	}
+});
+
+Deno.test("unrelated models and malformed revision suffixes fail closed", async () => {
+	for (const model of [undefined, null, 42, "other/model", "typesafe/jev-1.14-20260917",
+		`${MODEL}0`, `${MODEL}-`, `${MODEL}-latest`, `${MODEL}-2026091`, `${MODEL}-202609170`,
+		`${MODEL}-20260917-extra`, `${MODEL}-20260917\n`, `${MODEL}\n`]) {
+		const result = { ...answer(), model };
+		const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(result) });
+		assertEquals(assessment.status, "error");
+		assertEquals(initialModeration(assessment).visibility, "hidden");
+		assertEquals(initialModeration({ ...result, status: "classified", prompt_version: PROMPT_VERSION,
+			category: "plaintext", probabilities: result.answers.category.probabilities }).visibility, "hidden");
+	}
+});
+
+for (const [category, reason] of [["spam", "spam"], ["phishing", "malware or phishing"], ["csam", "CSAM"], ['unsafe', 'other illegal content']]) {
 	Deno.test(`upload policy: ${category} is hidden and mapped to the staff reason`, async () => {
 		const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(answer(category, 0.55)) });
 		assertEquals(initialModeration(assessment), {
@@ -44,15 +69,21 @@ for (const [category, reason] of [["spam", "spam"], ["phishing", "malware or phi
 	});
 }
 
-Deno.test("uncertain benign choice stays hidden for staff review", async () => {
-	const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(answer("plaintext", 0.89)) });
+Deno.test("a benign choice with too much aggregate harmful score stays hidden", async () => {
+	const result = answer('plaintext', 0.98);
+	result.answers.category.probabilities.code = 0;
+	result.answers.category.probabilities.unsafe = 0.02;
+	const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(result) });
 	assertEquals(initialModeration(assessment), {
 		decision: "unreviewed", visibility: "hidden", reason: null, requires_review: true,
 	});
 });
 
-Deno.test("the 0.9 benign threshold is inclusive", async () => {
-	const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(answer("code", 0.9)) });
+Deno.test("the 0.01 aggregate harmful threshold is inclusive", async () => {
+	const result = answer('code', 0.99);
+	result.answers.category.probabilities.plaintext = 0;
+	result.answers.category.probabilities.unsafe = 0.01;
+	const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(result) });
 	assertEquals(initialModeration(assessment).visibility, "visible");
 });
 
@@ -66,16 +97,16 @@ Deno.test("URL text does not imply destination approval or a redirect", async ()
 Deno.test("provider request includes public paste fields, not private audit metadata", async () => {
 	let calls = 0;
 	const assessment = await assessPaste({
-		...metadata, description: "note", filename: "note.txt", id: "CP0A1B2C",
+		...metadata, filename: "note.txt", id: "CP0A1B2C",
 		upload_metadata: { ip: "do-not-send" }, proof_of_work: { nonce: "do-not-send" },
 	}, "hello", KEY, { fetchImpl: async (url, options) => {
 		calls++;
 		assertEquals(url, DECISIONS_URL);
-		assertEquals(options.redirect, "error");
+		assertEquals(options.redirect, "manual");
 		assertEquals(options.headers.authorization, `Bearer ${KEY}`);
 		assert(options.signal instanceof AbortSignal);
 		const request = JSON.parse(options.body);
-		assertEquals(request.state, { content_type: "plaintext", content: "hello", description: "note", filename: "note.txt" });
+		assertEquals(request.state, { content_type: "plaintext", content: "hello", filename: "note.txt" });
 		assert(!JSON.stringify(request).includes("do-not-send"));
 		return new Response(JSON.stringify(answer()));
 	} });
@@ -103,6 +134,8 @@ Deno.test("media (including a misleading plaintext content_type) needs human rev
 		["mp3", "audio"], ["mp4", "video"], ["plaintext", "data:image/png;base64,x"],
 		["plaintext", "data:image/webp;base64,x"], ["plaintext", "data:image/gif;base64,x"],
 		["plaintext", "data:audio/mpeg;base64,x"], ["plaintext", "data:video/mp4;base64,x"],
+		['plaintext', 'data:application/octet-stream;base64,YWJj'],
+		['plaintext', 'Code with an embedded data:image/png;base64,YWJj payload'],
 	]) {
 		const assessment = await assessPaste({ ...metadata, content_type: contentType }, content, KEY, {
 			fetchImpl: () => { throw new Error("must not call"); },
@@ -149,7 +182,7 @@ Deno.test("invalid, missing, contradictory, and non-normalized answers fail clos
 	contradictory.answers.category.probabilities.spam = 0.94;
 	const unnormalized = answer();
 	unnormalized.answers.category.probabilities.spam = 1;
-	for (const value of [{}, unknown, contradictory, unnormalized]) {
+	for (const value of [{}, unknown, contradictory, unnormalized, { ...answer(), model: 'other/model' }, { ...answer(), model: undefined }]) {
 		const assessment = await assessPaste(metadata, "hello", KEY, { fetchImpl: mockFetch(value) });
 		assertEquals(assessment.status, "error");
 		assertEquals(initialModeration(assessment).visibility, "hidden");

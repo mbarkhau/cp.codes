@@ -3,13 +3,10 @@
  * Client PoW logic lives in /app.js (static asset).
  */
 
-import type { PasteUploadMetadata, RecentPaste, StoredPaste } from "./paste";
+import type { PasteUploadMetadata, PublicPastePage, RecentPaste, StoredPaste } from "./paste";
 import {
 	DEFAULT_PASTE_BYTES,
-	MAX_DESCRIPTION_CHARS,
-	MAX_FILENAME_CHARS,
 	MAX_REPORT_EMAIL_CHARS,
-	PASTE_DIFFICULTY_STEP_BYTES,
 	REPORT_CATEGORIES,
 } from "./paste";
 import { CONTENT_TYPES, CONTENT_TYPE_LABELS, fileExtension } from "./content_type";
@@ -27,33 +24,33 @@ function escapeHtml(s: string): string {
 const SHELL_STYLE = `
 :root {
   color-scheme: light;
-  --bg: #f3f3f2;
-  --fg: #080808;
-  --muted: #444443;
+  --bg: #f4f7fb;
+  --fg: #17243b;
+  --muted: #596980;
   --card: #ffffff;
   --surface: #f8f8f7;
-  --border: #858585;
-  --accent: #181818;
-  --accent-hover: #000000;
+  --border: #d1dbe8;
+  --accent: #2458cf;
+  --accent-hover: #1743a3;
   --accent-contrast: #ffffff;
   --focus: #3f3f3f;
-  --danger: #694f4d;
-  --success: #4f5d54;
+  --danger: #a52c43;
+  --success: #1e715b;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.07);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #10100f;
-  --fg: #e4e4e0;
-  --muted: #a4a49f;
-  --card: #20201e;
-  --surface: #171716;
-  --border: #575753;
-  --accent: #d7d7d2;
-  --accent-hover: #efefec;
-  --accent-contrast: #20201e;
+  --bg: #101927;
+  --fg: #e6edf8;
+  --muted: #a0b2cd;
+  --card: #182437;
+  --surface: #121e30;
+  --border: #344864;
+  --accent: #a2bfff;
+  --accent-hover: #c6d8ff;
+  --accent-contrast: #101927;
   --focus: #a9a9a4;
   --danger: #c1aaa8;
   --success: #acb9b0;
@@ -71,7 +68,7 @@ body {
 }
 a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 65%, transparent); text-underline-offset: 0.18em; }
 a:hover { color: var(--accent-hover); text-decoration-color: currentColor; }
-.wrap { max-width: 54rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+.wrap { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
 .wrap.wide { max-width: 96rem; }
 header { display: flex; align-items: center; min-height: 2.5rem; margin-bottom: 2rem; }
 .logo { font-family: var(--mono); font-weight: 650; font-size: 1.15rem; letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }
@@ -284,21 +281,41 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .notes h1 { margin: 0 0 0.75rem; color: var(--fg); font-size: 1.35rem; letter-spacing: -0.02em; }
 .notes ul { padding-left: 1.2rem; }
 .paste-head { margin-bottom: 1rem; }
-.paste-description { margin: 0.45rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .paste-card { position: relative; min-height: 5rem; }
 .paste-loading { margin: 0; padding: 1.25rem; color: var(--muted); }
 .paste-load-error { margin: 0; padding: 1.25rem; color: var(--danger); white-space: pre-wrap; }
-.paste-actions {
-  position: absolute;
-  right: 0.75rem;
-  bottom: 0.75rem;
-  z-index: 1;
-  display: flex;
-  gap: 0.55rem;
-  align-items: center;
+.paste-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; align-items: center; margin-top: 1rem; }
+.paste-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; align-items: center; }
+.paste-toolbar .paste-action-status { position: relative; min-width: 0; height: 2.75rem; margin: 0; }
+.paste-toolbar .paste-action-status > span { position: absolute; inset: 0; display: flex; justify-content: flex-end; align-items: center; }
+.paste-toolbar .paste-action-status .action-feedback { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-feedback { opacity: 1; transition: none; }
+.action-feedback.is-fading { opacity: 0; transition: opacity 1s ease; }
+@media (max-width: 640px) {
+  .paste-toolbar { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+  .paste-toolbar .paste-action-status { height: 1.5rem; }
 }
-.paste-actions button { box-shadow: 0 2px 8px color-mix(in srgb, var(--bg) 70%, transparent); }
-#copy-paste { min-width: 5.5rem; }
+@media (prefers-reduced-motion: reduce) { .action-feedback.is-fading { transition: none; } }
+.icon-action {
+  display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--muted);
+  text-decoration: none; flex: 0 0 auto;
+}
+.icon-action svg { width: 1.2rem; height: 1.2rem; }
+.icon-action:hover:not(:disabled) { color: var(--fg); background: var(--card); border-color: var(--focus); }
+.icon-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.icon-action.danger { color: var(--danger); background: var(--surface); border-color: var(--border); }
+.icon-action.danger:hover:not(:disabled) { color: var(--danger); background: var(--card); border-color: var(--danger); filter: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.paste-dialog { color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; width: min(58rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; box-shadow: var(--shadow); }
+.paste-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+.paste-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.paste-dialog-head h2 { margin: 0; font-size: 1.2rem; }
+.paste-dialog h3 { font-size: 0.9rem; margin: 1rem 0 0.5rem; }
+.paste-file-metadata + .paste-file-metadata { margin-top: 1rem; }
+.paste-file-metadata h3 { overflow-wrap: anywhere; }
+.paste-file-links { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+.paste-file-links[hidden] { display: none; }
 .paste-delete { display: flex; gap: 0.55rem; align-items: center; }
 .paste-delete[hidden] { display: none; }
 .paste-delete .status { margin: 0; }
@@ -336,12 +353,13 @@ button.danger:hover:not(:disabled) { border-color: var(--danger); background: va
   line-height: 0;
   box-sizing: border-box;
   width: calc(var(--qr-w) + 2 * var(--qr-pad));
-  height: calc(var(--qr-h) + 2 * var(--qr-pad));
+  max-width: 100%;
+  height: auto;
 }
 .paste-qr a {
   display: block;
-  width: var(--qr-w);
-  height: var(--qr-h);
+  width: 100%;
+  height: auto;
   line-height: 0;
   text-decoration: none;
   color: inherit;
@@ -351,7 +369,8 @@ button.danger:hover:not(:disabled) { border-color: var(--danger); background: va
 .paste-qr img {
   display: block;
   width: var(--qr-w);
-  height: var(--qr-h);
+  max-width: 100%;
+  height: auto !important;
   image-rendering: -moz-crisp-edges;
   image-rendering: pixelated;
 }
@@ -397,12 +416,11 @@ pre.paste {
 }
 .pow-fields dt { padding-right: 1rem; }
 .pow-fields dd { color: var(--muted); overflow-wrap: anywhere; }
-.report-panel { margin-top: 1.25rem; }
-.report-panel summary { cursor: pointer; color: var(--danger); font-size: 0.85rem; }
 .report-panel form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.75rem; align-items: end; margin-top: 1rem; }
 .report-panel label { margin: 0; }
 .report-panel label > span { display: block; margin-bottom: 0.35rem; }
-.report-panel .status { grid-column: 1 / -1; margin: 0; }
+.report-panel .status { grid-column: 1 / -1; position: relative; height: 2.75rem; margin: 0; }
+.report-panel .status > span { position: absolute; inset: 0; overflow: auto; }
 @media (max-width: 640px) { .report-panel form { grid-template-columns: 1fr; } }
 .markdown-body { padding: 1rem 1.25rem; overflow-wrap: anywhere; }
 .markdown-body > :first-child { margin-top: 0; }
@@ -422,9 +440,34 @@ pre.paste {
 .paste-media-wrap { padding: 1rem; background: var(--surface); }
 .paste-media { display: block; width: 100%; max-height: 75vh; margin: 0 auto; }
 @media (max-width: 720px) {
-  .paste-details { grid-template-columns: 1fr; }
+  .paste-details { grid-template-columns: minmax(0, 1fr); }
   .paste-qr { margin: 0 auto; justify-self: center; }
 }
+.hero { margin: 1rem 0 2rem; max-width: 48rem; }
+.hero .eyebrow { color: var(--accent); font: 650 .75rem var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); letter-spacing: -.05em; margin: .4rem 0 .75rem; }
+.hero p { color: var(--muted); margin: .5rem 0; }
+.composer-layout { display: grid; grid-template-columns: 15rem minmax(0,1fr); gap: 1.25rem; }
+.file-sidebar { align-self: start; padding: 1rem; }
+.file-sidebar h2 { margin: 0 0 1rem; font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
+.file-row { display: flex; gap: .2rem; margin-bottom: .5rem; align-items: center; }
+.file-row button { padding: .45rem .35rem; font-size: .75rem; border: 0; background: transparent; color: var(--muted); }
+.file-row .file-tab { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); }
+.file-row .file-tab[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb,var(--accent) 10%,var(--card)); }
+.file-row button:hover { color: var(--fg); background: var(--surface); }
+.file-sidebar > button { width: 100%; margin-top: .5rem; }
+.policy-note { padding: 1rem; background: color-mix(in srgb,var(--accent) 6%,var(--card)); border: 1px solid var(--border); border-radius: 8px; font-size: .85rem; }
+.policy-note p { margin: .35rem 0; }
+#upload-result { margin-top: 1.25rem; border-color: var(--accent); }
+#upload-result[hidden], [hidden] { display: none !important; }
+.share-link { font: 600 1.1rem var(--mono); overflow-wrap: anywhere; }
+.btn { display: inline-block; text-decoration: none; }
+.paste-file-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+.paste-file-nav button { background: var(--surface); color: var(--fg); border-color: var(--border); font: .85rem var(--mono); }
+.paste-file-nav button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.sharing-banner { margin: 1rem 0; }
+@media(max-width:760px) { .composer-layout { grid-template-columns: 1fr; } .file-sidebar { padding: .85rem; } #file-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(12rem,1fr)); gap: .4rem; } }
+@media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
 .footer { margin: 2.25rem 0 0; padding: 1.25rem 0 0 1.15rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.78rem; }
 .recent { margin-top: 1.75rem; }
 .recent-page { margin-top: 0; }
@@ -470,6 +513,9 @@ pre.paste {
   white-space: nowrap;
 }
 .recent-empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
+.paste-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1rem; margin: 1.5rem 0; }
+.paste-pagination a { padding: .5rem .75rem; border: 1px solid var(--border); border-radius: 6px; text-decoration: none; }
+.paste-pagination [aria-disabled] { color: var(--muted); }
 @media (max-width: 640px) {
   .wrap { padding: 1rem 1rem 3rem; }
   header { flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.5rem; }
@@ -527,7 +573,7 @@ function navigation(currentPath: string, showStaffNavigation: boolean): string {
         ${link("/admin/users", "users")}
         ${link("/admin/access-log", "access log")}
         <form class="nav-logout" method="post" action="/logout"><button type="submit">log out</button></form>`
-		: link("/login", "staff login");
+		: "";
 	return `<nav class="site-nav" aria-label="Primary navigation">
         ${link("/", "new")}
         ${link("/pastes", "pastes")}
@@ -548,9 +594,9 @@ export function layout(
 		: `<a class="logo" href="/">cp<span>.codes/</span></a>`;
 	const currentPath = options.currentPath ?? (headerPath ? `/${headerPath}` : "");
 	const footer = options.showFooter === false ? "" : `<ul class="footer">
-      <li>All visible pastes are public, even if they're not listed.</li>
+      <li>AI-cleared pastes are limited to their uploader and three other IPs. Human approval is required for public distribution. Unlisted links are not secret storage.</li>
       <li>Operators may hide or delete content at any time for any reason.</li>
-      <li>Access to your paste may be limited until its legality has been verified.</li>
+      <li>Access to your paste may be limited until a moderator approves wider distribution.</li>
       <li>IP and location metadata are logged for paste uploads and accesses; access logs also retain the HTTP Referer. They are used for abuse prevention and made available upon lawful request.</li>
     </ul>`;
 	return `<!doctype html>
@@ -605,13 +651,13 @@ function recentPasteSummary(paste: RecentPaste): string {
 		? `<strong>${escapeHtml(filename)}</strong> · `
 		: "";
 
-	return `<span class="recent-preview" title="${escapeHtml(paste.description ?? paste.filename ?? paste.preview)}"><span class="type-badge">${escapeHtml(badge)}</span> ${filenameDetail}${escapeHtml(paste.description ?? paste.preview) || "…"}</span>`;
+	return `<span class="recent-preview" title="${escapeHtml(paste.filename ?? paste.preview)}"><span class="type-badge">${escapeHtml(badge)}</span> ${filenameDetail}${escapeHtml(paste.preview) || "…"}</span>`;
 }
 
-function recentSection(recent: RecentPaste[], standalone = false): string {
+function recentSection(recent: RecentPaste[], standalone = false, listing?: PublicPastePage): string {
 	const items =
 		recent.length === 0
-			? `<p class="recent-empty">No uploads yet.</p>`
+			? `<p class="recent-empty">No public pastes yet.</p>`
 			: `<ul class="recent-list">
 ${recent
 	.map(
@@ -627,37 +673,53 @@ ${recent
 
 	return `
 <section class="recent card${standalone ? " recent-page" : ""}" id="pastes">
-  <h2>Recent uploads</h2>
+  <h2>${standalone ? 'Public pastes' : 'Recent uploads'}</h2>
+  ${listing ? publicPasteNavigation(listing) : ''}
   ${items}
+  ${listing ? publicPasteNavigation(listing) : ''}
 </section>`;
 }
 
 type SitePage = "about" | "pastes" | "new";
 
-function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigation = false): Response {
+function publicPasteNavigation(listing: PublicPastePage): string {
+	if (!listing.total) return '';
+	const previous = listing.page > 1
+		? `<a href="/pastes?page=${listing.page - 1}" rel="prev">← Previous</a>`
+		: '<span aria-disabled="true">← Previous</span>';
+	const next = listing.page < listing.total_pages
+		? `<a href="/pastes?page=${listing.page + 1}" rel="next">Next →</a>`
+		: '<span aria-disabled="true">Next →</span>';
+	const first = (listing.page - 1) * listing.page_size + 1;
+	const last = first + listing.items.length - 1;
+	return `<nav class="paste-pagination" aria-label="Paste pages">${previous}<span class="meta">Page ${listing.page} of ${listing.total_pages} · ${first}–${last} of ${listing.total} pastes</span>${next}</nav>`;
+}
+
+function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigation = false, listing?: PublicPastePage): Response {
 	const d = POW_DEFAULTS.difficultyBits;
 	const p50 = Math.ceil(Math.LN2 * 2 ** d);
 	const average = 2 ** d;
 	const newSection = `
+<div class="composer-layout">
+<aside class="card file-sidebar"><h2>Your files</h2><div id="file-list" aria-label="Files in this paste"></div><button class="file-button" type="button" id="add-text">+ New text file</button><p class="meta">Up to 16 files · 8 MiB total</p><p class="meta">★ Main is the document people see first. Reference siblings in Markdown: <code>![diagram](diagram.png)</code></p></aside>
 <section class="card" id="new">
   <div class="paste-fields">
     <div>
-      <label for="description">Description (optional)</label>
-      <input type="text" id="description" maxlength="${MAX_DESCRIPTION_CHARS}" placeholder="What is this paste?" />
-    </div>
-    <div>
-      <label for="filename">Filename (optional)</label>
-      <input type="text" id="filename" maxlength="${MAX_FILENAME_CHARS}" placeholder="example.py" spellcheck="false" />
+      <label for="filename">Selected file name</label>
+      <input type="text" id="filename" maxlength="128" placeholder="example.py" spellcheck="false" />
     </div>
   </div>
   <div class="content-heading">
     <label for="content">Content</label>
     <div>
-      <input class="file-input" type="file" id="file-input" />
-      <button class="file-button" type="button" id="file-button" aria-controls="file-input">Upload file</button>
+      <input class="file-input" type="file" id="file-input" multiple />
+      <button class="file-button" type="button" id="preview-file" aria-pressed="false" aria-controls="draft-preview">Preview</button>
+      <button class="file-button" type="button" id="file-button" aria-controls="file-input">+ Add files</button>
     </div>
   </div>
-  <textarea id="content" placeholder="Paste text, code, Markdown, a URL, or drop text, PNG/JPEG/WebP/GIF, MP3, or MP4…" spellcheck="false"></textarea>
+  <textarea id="content" aria-label="Selected file content" placeholder="Write or paste your document here. Drop multiple files to add them to this paste…" spellcheck="false"></textarea>
+  <p class="policy-note" id="media-selected" hidden>Media file added. It will be included with this paste, but needs human review before sharing. Select a text file to keep writing.</p>
+  <div class="card" id="draft-preview" hidden></div>
   <div class="row-publish">
     <span class="meta"><span id="bytes">0 bytes</span> · <span id="size-difficulty">Base-size PoW</span> · <span id="detected-type">Detected: Plaintext</span></span>
     <div class="type-control">
@@ -669,29 +731,32 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
     </div>
   </div>
   <div class="consent-publish">
-    <label class="check-control"><input type="checkbox" id="listed" checked /><span>Public listing. (Only affects visibility in cp.codes/pastes listing. Visible pastes are publicly accessible via their URL regardless of listing status.)</span></label>
+    <label class="check-control"><input type="checkbox" id="listed" /><span>List publicly after human approval. Off by default; anyone with the link may request access within the sharing limits.</span></label>
     <label class="check-control consent-control"><input type="checkbox" id="consent" /><span>I consent to the collection and storage of <a href="/client-info">my IP and location data</a>.</span></label>
-    <label class="check-control consent-control"><input type="checkbox" id="consent-moderation" /><span>I consent to sending paste data to <a href="/about#service-providers">service providers</a> for automated moderation. Your paste may remain private until moderation is complete.</span></label>
-    <button type="button" id="publish" disabled>Publish</button>
+    <label class="check-control consent-control"><input type="checkbox" id="consent-moderation" /><span>I consent to sending paste data to <a href="/about#service-providers">service providers</a> for automated moderation. Uncertain content and media need human review before access.</span></label>
+    <div class="row"><button type="button" id="publish" disabled>Create share link</button><button class="file-button" type="button" id="cancel-publish" hidden>Cancel proof search</button><span class="meta">⌘ / Ctrl + Enter</span></div>
   </div>
   <div class="progress" id="progress" aria-hidden="true"><i></i></div>
-  <div class="status" id="status" role="status"></div>
-</section>`;
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+  <div class="policy-note"><strong>Designed for small-circle sharing</strong><p>Clearly innocuous text is immediately available to you and three other IPs. More traffic or a larger audience queues human review. IPs identify connections, not individual people.</p><p>Images, audio, and video are supported, but Jev cannot assess them: media pastes wait for human review.</p></div>
+</section></div>
+<section class="card" id="upload-result" tabindex="-1" hidden aria-live="polite"></section>`;
 	const aboutSection = `
 <section class="notes${page === "about" ? " about-page" : ""}" id="about">
   <h1>About cp.codes</h1>
   <p>cp.codes is a public pastebin and document store with no accounts or registration.</p>
   <ul>
-    <li>No login. Uploads need a <strong>SHA-256</strong> search PoW: base difficulty ${d} (~${p50.toLocaleString()} attempts for a 50% chance; ${average.toLocaleString()} average). It rises by one bit for each paste from the 15th onward in the previous 10 minutes.</li>
+    <li>No login. Uploads need a <strong>SHA-256</strong> search PoW: base difficulty ${d} (~${p50.toLocaleString()} attempts for a 50% chance; ${average.toLocaleString()} average). Expected work scales with estimated storage, operations, and moderation costs. Per-IP and global rolling budgets limit abuse; upload prices are rechecked atomically at redemption.</li>
     <li>Listed pastes get short version 0 ids; unlisted pastes stay out of recent uploads and use longer version 2 ids.</li>
-    <li>No application size cap. Base difficulty covers ${DEFAULT_PASTE_BYTES.toLocaleString()} bytes; each additional started ${PASTE_DIFFICULTY_STEP_BYTES.toLocaleString()}-byte block adds one bit, up to SHA-256's 256-bit maximum. UTF-8 text plus PNG/JPEG/WebP/GIF images and MP3/MP4 media encoded as base64 data URLs; browsers gzip content before upload and decompress it when viewed.</li>
-    <li>Every upload is assessed for spam, phishing, and CSAM before publication. Paste text and public descriptive metadata are sent to the moderation service providers listed below. Images, audio, video, over-context pastes, uncertain results, and assessment failures are held for staff review. Automated classification is not a verification of legality.</li>
+    <li>Up to 16 files per paste and 8 MiB of uncompressed container data. UTF-8 text plus PNG/JPEG/WebP/GIF images and MP3/MP4 media; browsers gzip content before upload. Markdown can reference named sibling files.</li>
+    <li>AI-cleared text is available to the uploader and three other IPs, subject to request and byte budgets. Wider distribution requires human approval. Only human-approved listed pastes appear in the public feed.</li>
+    <li>Every upload is assessed for spam, phishing, CSAM, and other unsafe content before access. Limited sharing requires an aggregate harmful model score of at most 0.01, not a certification of legality. Paste text and public descriptive metadata are sent to the moderation service providers listed below. Images, audio, video, over-context pastes, uncertain results, and assessment failures are held for staff review. Automated classification is not a verification of legality.</li>
     <li>Press <strong>Ctrl/⌘+P</strong> to detect and publish.</li>
   </ul>
   <h2 id="service-providers">Service providers</h2>
   <ul>
     <li><strong>Cloudflare</strong> hosts cp.codes and stores pastes and upload metadata, including IP and location data.</li>
-    <li><strong>DefAPI</strong> provides the API used for automated moderation. Paste text, description, filename, and content type are sent to this service.</li>
+    <li><strong>DefAPI</strong> provides the API used for automated moderation. Paste text, filename, and content type are sent to this service.</li>
     <li><strong>TypeSafe</strong> supplies the Jev model used for automated moderation through DefAPI.</li>
     <li><strong>jsDelivr</strong> serves browser libraries for Markdown rendering and fallback proof-of-work hashing. When loading these libraries, your browser sends IP and request metadata to the CDN, not paste contents.</li>
   </ul>
@@ -701,14 +766,14 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
 		? newSection
 		: page === "about"
 			? aboutSection
-			: recentSection(recent, true);
+			: recentSection(recent, true, listing);
 	const titles: Record<SitePage, string> = {
 		about: "About — cp.codes",
 		pastes: "Pastes — cp.codes",
 		new: "New paste — cp.codes",
 	};
 	const script = page === "new"
-		? `<script type="module" src="/app.js?v=21"></script>`
+		? `<script type="module" src="/app.js?v=22"></script>`
 		: undefined;
 	const html = layout(titles[page], body, script, page, { showStaffNavigation });
 	return new Response(html, {
@@ -724,8 +789,8 @@ export function aboutPage(showStaffNavigation = false): Response {
 	return sitePage("about", [], showStaffNavigation);
 }
 
-export function pastesPage(recent: RecentPaste[], showStaffNavigation = false): Response {
-	return sitePage("pastes", recent, showStaffNavigation);
+export function pastesPage(listing: PublicPastePage, showStaffNavigation = false): Response {
+	return sitePage("pastes", listing.items, showStaffNavigation, listing);
 }
 
 export function newPage(showStaffNavigation = false): Response {
@@ -755,11 +820,34 @@ ${rows}
 	});
 }
 
+function pasteIcon(name: "raw" | "copy" | "delete" | "report" | "link" | "details" | "close" | "download"): string {
+	const shapes = {
+		raw: '<path d="m8 5-7 7 7 7m8-14 7 7-7 7m-2-17-4 20"/>',
+		copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+		delete: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+		report: '<path d="M5 21V3m0 1h14l-3 4 3 4H5"/>',
+		link: '<path d="m10 13 4-4m-6 7-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 1 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
+		details: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/>',
+		close: '<path d="m6 6 12 12M6 18 18 6"/>',
+		download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
+	};
+	return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${shapes[name]}</svg>`;
+}
+
+function fileMetadataSection(paste: StoredPaste): string {
+	const files = paste.files ?? [{ name: paste.filename ?? "Unnamed file", content_type: paste.content_type, byte_length: paste.byte_length, sha256: paste.sha256 }];
+	return `<section><h3>File metadata</h3>${files.map(file => `<section class="paste-file-metadata" data-file-name="${escapeHtml(file.name)}">
+      <h3>${escapeHtml(file.name)}${file.name === paste.primary ? ' · Main' : ''}</h3>
+      <dl class="pow-fields"><dt>Content type</dt><dd>${escapeHtml(file.content_type)}</dd><dt>Size</dt><dd>${file.byte_length} bytes</dd><dt>SHA-256</dt><dd>${escapeHtml(file.sha256)}</dd></dl>
+      ${paste.format ? `<div class="paste-file-links" hidden><a class="icon-action file-download" aria-label="Download ${escapeHtml(file.name)}" title="Download file">${pasteIcon("download")}</a><a class="icon-action" href="/${escapeHtml(paste.id)}/files/${encodeURIComponent(file.name)}" aria-label="Permalink to ${escapeHtml(file.name)}" title="File permalink">${pasteIcon("link")}</a></div>` : ''}
+    </section>`).join('')}</section>`;
+}
+
 function proofOfWorkSection(proof: StoredPaste["proof_of_work"]): string {
-	if (!proof) return "";
+	if (!proof) return '<section><h3>Upload proof &amp; integrity</h3><p class="meta">No proof-of-work details available.</p></section>';
 	return `
-    <section class="pow-info card">
-      <h2>Proof of work</h2>
+    <section>
+      <h3>Upload proof &amp; integrity</h3>
       <dl class="pow-fields">
         <dt>Algorithm</dt><dd>SHA-256</dd>
         <dt>Difficulty</dt><dd>${proof.difficulty} leading zero bits</dd>
@@ -772,42 +860,43 @@ function proofOfWorkSection(proof: StoredPaste["proof_of_work"]): string {
     </section>`;
 }
 
-export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigation = false, staffReview = false): Response {
+export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigation = false, staffReview = false, sharingState = 'limited'): Response {
 	const id = escapeHtml(paste.id);
 	const qrHref = `https://cp.codes/${paste.id.toUpperCase()}`;
 	const typeLabel = CONTENT_TYPE_LABELS[paste.content_type];
 	const rawUrl = staffReview ? `/admin/paste/${id}/raw` : `/${id}.${fileExtension(paste.content_type)}`;
 	const contentUrl = staffReview ? `/admin/paste/${id}/content` : `/api/paste/${id}/content`;
-	const rawLink = ` · <a href="${rawUrl}">raw</a>`;
 	const filename = paste.filename ? ` · <strong>${escapeHtml(paste.filename)}</strong>` : "";
 	const visibility = paste.unlisted ? " · unlisted" : "";
-	const description = paste.description
-		? `<p class="paste-description">${escapeHtml(paste.description)}</p>`
-		: "";
-
 	const body = `
 <div class="paste-main">
   <section class="paste-head">
-    ${staffReview ? `<p class="status">Staff review — content remains subject to its current visibility. <a href="/admin/pastes">← moderation</a></p>` : ""}
-    <div class="meta">${formatWhen(paste.created_at)} · ${paste.byte_length} bytes · <span id="paste-hit-count">${formatHitCount(hitCount)}</span> · <span class="type-badge">${escapeHtml(typeLabel)}</span>${filename}${visibility}${rawLink}</div>
-    ${description}
+    ${staffReview ? `<p class="status">Staff review — content remains subject to its current visibility. <a href="/admin/pastes">← moderation</a></p><div class="row"><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="approve"/><button type="submit">Approve public access</button></form><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="classify"/><select name="reason" aria-label="Restriction reason" required><option value="">Restriction reason…</option>${REPORT_CATEGORIES.map(reason => `<option>${escapeHtml(reason)}</option>`).join('')}</select> <button class="danger" type="submit">Restrict &amp; hide</button></form></div>` : ""}
+    <div class="meta">${formatWhen(paste.created_at)} · ${paste.byte_length} bytes · <span id="paste-hit-count">${formatHitCount(hitCount)}</span> · <span class="type-badge">${escapeHtml(typeLabel)}</span>${filename}${visibility}</div>
+    <div class="policy-note sharing-banner">${staffReview ? 'Staff inspection — not a public approval.' : sharingState === 'approved' ? 'Human-approved · available for public sharing.' : sharingState === 'owner-review' ? 'Traffic review pending · you can still read this paste, but other connections must wait for human approval.' : 'Limited sharing · you + three other IPs. More traffic or a wider audience requires human review.'}</div>
+    ${paste.format ? `<nav class="paste-file-nav" id="paste-file-nav" aria-label="Paste files"></nav><p class="meta" id="selected-file-info"></p>` : ''}
+    <div class="paste-toolbar">
+    <p class="status paste-action-status" role="status" aria-atomic="true"><span><span class="action-feedback" id="paste-action-status"></span></span></p>
+    <nav class="paste-actions" aria-label="Paste actions">
+      <a class="icon-action" id="raw-paste" href="${rawUrl}" title="View raw content" aria-label="View raw content">${pasteIcon("raw")}</a>
+      <button class="icon-action" type="button" id="copy-paste" data-cp-code="${id}" title="Copy content" aria-label="Copy content" disabled>${pasteIcon("copy")}</button>
+      <div class="paste-delete" id="paste-delete" hidden>
+        <button type="button" class="icon-action danger" id="delete-paste" data-cp-code="${id}" title="Delete paste" aria-label="Delete paste">${pasteIcon("delete")}<span class="sr-only">Time remaining: <span id="delete-countdown">9:59</span></span></button>
+      </div>
+      <button class="icon-action" type="button" id="open-report" data-dialog="report-dialog" aria-haspopup="dialog" aria-controls="report-dialog" title="Report paste" aria-label="Report paste">${pasteIcon("report")}</button>
+      <button class="icon-action" type="button" id="copy-link" title="Copy link" aria-label="Copy link">${pasteIcon("link")}</button>
+      <button class="icon-action" type="button" id="open-details" data-dialog="paste-details-dialog" aria-haspopup="dialog" aria-controls="paste-details-dialog" title="Paste details" aria-label="Paste details">${pasteIcon("details")}</button>
+    </nav>
+    </div>
   </section>
   <section class="card paste-card" style="padding:0; overflow:hidden;">
-    <div id="paste-content" data-cp-code="${id}" data-content-url="${contentUrl}" data-staff-review="${staffReview}" data-content-type="${escapeHtml(paste.content_type)}" data-byte-length="${paste.byte_length}" data-sha256="${escapeHtml(paste.sha256)}" aria-busy="true">
+    <div id="paste-content" data-cp-code="${id}" data-content-url="${contentUrl}" data-staff-review="${staffReview}" data-format="${paste.format ?? 'single'}" data-primary="${escapeHtml(paste.primary ?? '')}" data-content-type="${escapeHtml(paste.content_type)}" data-byte-length="${paste.byte_length}" data-sha256="${escapeHtml(paste.sha256)}" aria-busy="true">
       <p class="paste-loading" role="status">Loading and decompressing paste…</p>
-    </div>
-    <div class="paste-actions">
-      <div class="paste-delete" id="paste-delete" hidden>
-        <button type="button" class="danger" id="delete-paste" data-cp-code="${id}">Delete (<span id="delete-countdown">9:59</span>)</button>
-        <span class="status" id="delete-status" role="status"></span>
-      </div>
-      <button type="button" id="copy-paste" data-cp-code="${id}" disabled>Copy</button>
     </div>
   </section>
 </div>
-<section class="card report-panel">
-  <details>
-    <summary>Report suspected illegal content</summary>
+<dialog class="paste-dialog report-panel" id="report-dialog" aria-labelledby="report-heading">
+  <div class="paste-dialog-head"><h2 id="report-heading">Report suspected illegal content</h2><button type="button" class="icon-action" data-close-dialog title="Close" aria-label="Close report">${pasteIcon("close")}</button></div>
     <form id="report-paste" data-cp-code="${id}">
       <label><span>Reason (optional)</span><select name="category">
         <option value="">Select a reason</option>
@@ -815,10 +904,11 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
       </select></label>
       <label><span>Email (optional)</span><input type="email" name="email" maxlength="${MAX_REPORT_EMAIL_CHARS}" autocomplete="email" /></label>
       <button type="submit">Submit report</button>
-      <p class="status" id="report-status" role="status"></p>
+      <p class="status" role="status" aria-atomic="true"><span class="action-feedback" id="report-status"></span></p>
     </form>
-  </details>
-</section>
+</dialog>
+<dialog class="paste-dialog" id="paste-details-dialog" aria-labelledby="paste-details-heading">
+  <div class="paste-dialog-head"><h2 id="paste-details-heading">Paste details</h2><button type="button" class="icon-action" data-close-dialog title="Close" aria-label="Close details">${pasteIcon("close")}</button></div>
 <div class="paste-details">
   <aside class="paste-qr" aria-label="QR code">
     <a id="qr-link" href="${escapeHtml(qrHref)}" title="${escapeHtml(qrHref)}">
@@ -873,12 +963,17 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
       </script>
     </a>
   </aside>
-  ${proofOfWorkSection(paste.proof_of_work)}
-</div>`;
+  <div>
+    <dl class="pow-fields"><dt>Paste</dt><dd>${id}</dd><dt>Created</dt><dd>${escapeHtml(paste.created_at)}</dd><dt>Total size</dt><dd>${paste.byte_length} bytes</dd><dt>Stored size</dt><dd>${paste.compressed_byte_length} bytes (${escapeHtml(paste.content_encoding)})</dd><dt>Container SHA-256</dt><dd>${escapeHtml(paste.sha256)}</dd><dt>Visibility</dt><dd>${paste.unlisted ? 'Unlisted' : 'Listed'}</dd></dl>
+    ${fileMetadataSection(paste)}
+    ${proofOfWorkSection(paste.proof_of_work)}
+  </div>
+</div>
+</dialog>`;
 	const html = layout(
 		`cp.codes/${paste.id}`,
 		body,
-		`<script type="module" src="/view.js?v=15"></script>`,
+		`<script type="module" src="/view.js?v=18"></script>`,
 		paste.id,
 		{ showStaffNavigation },
 	);
@@ -888,6 +983,13 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
 			"cache-control": "no-store, private",
 			vary: "Cookie, Authorization",
 		},
+	});
+}
+
+export function reviewRequiredPage(id: string, message: string, status = 423): Response {
+	const body = `<section class="hero"><p class="eyebrow">${escapeHtml(id)}</p><h1>Human review is needed.</h1><p>${escapeHtml(message)}</p></section><section class="card"><p>The paste is stored, but this connection cannot access its content yet. This can happen when its sharing budget is reached, the AI is uncertain, or a file needs manual inspection.</p><p>No repeated upload is needed. A moderator can approve the same link.</p><p><a href="/${escapeHtml(id)}">Check again</a> · <a href="/">Create another paste</a></p><div class="paste-delete" id="paste-delete" hidden><button type="button" class="danger" id="delete-paste" data-cp-code="${escapeHtml(id)}">Delete (<span id="delete-countdown">9:59</span>)</button><span class="status" id="delete-status" role="status"></span></div></section>`;
+	return new Response(layout('Review required — cp.codes', body, '<script type="module" src="/view.js?v=16"></script>'), {
+		status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, private', 'referrer-policy': 'no-referrer', vary: 'Cookie, Authorization' },
 	});
 }
 

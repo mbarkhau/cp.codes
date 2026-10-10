@@ -45,7 +45,7 @@ export default {
 	});
 	mf = new Miniflare(convertV4MiniflareOptions({
 		modules: true, script: bundle.outputFiles[0].text,
-		compatibilityDate: "2026-09-05", r2Buckets: ["PASTES"],
+		compatibilityDate: "2026-09-05", r2Buckets: ["PASTES"], bindings: { STAFF_ALLOW_DEVELOPMENT_LOGIN: 'true' },
 		durableObjects: {
 			PASTE_INDEX: { className: "PasteIndex", useSQLite: true },
 			STAFF_SESSIONS: { className: "StaffSession", useSQLite: true },

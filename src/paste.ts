@@ -9,17 +9,18 @@
 import { DurableObject } from "cloudflare:workers";
 import { isContentType, type ContentType } from "./content_type";
 import { sha256Hex, timingSafeEqualHex } from "./pow";
-import { initialModeration, type JevAssessment } from "./jev.mjs";
+import { initialModeration, MODEL, PROMPT_VERSION, type JevAssessment } from "./jev.mjs";
+import { BASE_BYTES, sizeDifficultyBits, SHARING_LIMITS } from '../public/policy.js';
+import type { FileManifest } from './bundle';
 
 /** Paste bytes covered by the base proof-of-work difficulty. */
-export const DEFAULT_PASTE_BYTES = 10 * 1024;
-/** Each started block above the default allowance adds one difficulty bit. */
-export const PASTE_DIFFICULTY_STEP_BYTES = 100 * 1024;
+export const DEFAULT_PASTE_BYTES = BASE_BYTES;
 export const MAX_DESCRIPTION_CHARS = 1_000;
 export const MAX_FILENAME_CHARS = 255;
 export const PASTE_PREFIX = "pastes/";
 /** How many uploads the public recent list keeps. */
 export const RECENT_PASTE_LIMIT = 40;
+export const PUBLIC_PASTES_PAGE_SIZE = 50;
 /** Max chars stored/shown as a one-line preview. */
 export const PREVIEW_CHARS = 96;
 /** How long the creating client may delete its paste. */
@@ -62,6 +63,12 @@ export function isReviewReportFilter(value: unknown): value is ReviewReportFilte
 export function isPasteVisibility(value: unknown): value is PasteVisibility {
 	return typeof value === "string" && PASTE_VISIBILITIES.includes(value as PasteVisibility);
 }
+
+export type SharingAccess = {
+	allowed: boolean;
+	state: 'limited' | 'approved' | 'owner-review' | 'review' | 'missing';
+	reason: string;
+};
 
 export type PasteDeletionGrant = {
 	tokenHash: string;
@@ -113,6 +120,9 @@ export type PasteMeta = {
 	upload_metadata: PasteUploadMetadata;
 	/** The verified proof which authorized this paste. */
 	proof_of_work: PasteProofOfWork | null;
+	format?: 'bundle-v1';
+	primary?: string;
+	files?: FileManifest[];
 };
 
 export type PasteContentEncoding = "gzip" | "identity";
@@ -194,6 +204,7 @@ export type AdminPastePage = {
 export type ReviewPaste = Pick<AdminPaste, "metadata" | "moderation" | "automoderation" | "hit_count"> & {
 	reports: PasteReport[];
 	report_count: number;
+	sharing: { escalated: string | null; recipients: number; requests: number; bytes: number };
 	pending_review: boolean;
 };
 
@@ -259,6 +270,18 @@ export type RecentPaste = Omit<
 	hit_count: number;
 };
 
+export type PublicPastePage = {
+	items: RecentPaste[];
+	page: number;
+	page_size: number;
+	total: number;
+	total_pages: number;
+};
+
+export async function listPublicPastesPage(env: Env, page = 1): Promise<PublicPastePage> {
+	return pasteIndexStub(env).listPublicPage(page);
+}
+
 export function pasteObjectKey(id: string): string {
 	return `${PASTE_PREFIX}${id.toUpperCase()}`;
 }
@@ -268,9 +291,7 @@ export function pasteSizeDifficultyBits(byteLength: number): number {
 	if (!Number.isSafeInteger(byteLength) || byteLength < 1) {
 		throw new Error("paste byte length out of range");
 	}
-	return Math.ceil(
-		Math.max(0, byteLength - DEFAULT_PASTE_BYTES) / PASTE_DIFFICULTY_STEP_BYTES,
-	);
+	return sizeDifficultyBits(byteLength);
 }
 
 /** Reject empty content, NULs, and non-UTF8-looking binary. */
@@ -284,6 +305,7 @@ export function validatePlaintext(
 	if (content.length === 0) {
 		return { ok: false, error: "content is empty" };
 	}
+	if (!content.isWellFormed()) return { ok: false, error: 'content must contain well-formed Unicode' };
 	if (content.includes("\u0000")) {
 		return { ok: false, error: "content must be plaintext (NUL byte rejected)" };
 	}
@@ -343,6 +365,7 @@ export async function putPaste(
 		},
 		customMetadata: {
 			id: meta.id,
+			format: meta.format ?? '',
 			byte_length: String(meta.byte_length),
 			compressed_byte_length: String(compressedBytes.byteLength),
 			content_encoding: "gzip",
@@ -351,31 +374,10 @@ export async function putPaste(
 			region_id: String(meta.region_id),
 			region: meta.region ?? "",
 			content_type: meta.content_type,
-			description: meta.description ?? "",
-			filename: meta.filename ?? "",
-			unlisted: meta.unlisted ? "true" : "false",
-			upload_cf_connecting_ip: meta.upload_metadata["cf-connecting-ip"] ?? "",
-			upload_x_real_ip: meta.upload_metadata["x-real-ip"] ?? "",
-			upload_cf_ipcountry: meta.upload_metadata["cf-ipcountry"] ?? "",
-			upload_asn: meta.upload_metadata.asn == null ? "" : String(meta.upload_metadata.asn),
-			upload_as_organization: meta.upload_metadata.asOrganization ?? "",
-			upload_country: meta.upload_metadata.country ?? "",
-			upload_is_eu_country: meta.upload_metadata.isEUCountry ?? "",
-			upload_city: meta.upload_metadata.city ?? "",
-			upload_continent: meta.upload_metadata.continent ?? "",
-			upload_region: meta.upload_metadata.region ?? "",
-			upload_region_code: meta.upload_metadata.regionCode ?? "",
-			upload_timezone: meta.upload_metadata.timezone ?? "",
-			upload_longitude: meta.upload_metadata.longitude ?? "",
-			upload_latitude: meta.upload_metadata.latitude ?? "",
-			upload_postal_code: meta.upload_metadata.postalCode ?? "",
-			pow_challenge_id: meta.proof_of_work?.challenge_id ?? "",
-			pow_nonce: meta.proof_of_work?.nonce ?? "",
-			pow_solution: meta.proof_of_work?.solution ?? "",
-			pow_hash: meta.proof_of_work?.pow_hash ?? "",
-			pow_algorithm: meta.proof_of_work?.algorithm ?? "",
-			pow_difficulty: meta.proof_of_work == null ? "" : String(meta.proof_of_work.difficulty),
-			pow_leading_zero_bits: meta.proof_of_work == null ? "" : String(meta.proof_of_work.leading_zero_bits),
+			// Full audit metadata and manifests live in SQLite. Keeping these
+			// out of R2 avoids its 2 KiB custom-metadata limit and duplicate IPs.
+			metadata_source: 'index-v1',
+			unlisted: meta.unlisted ? 'true' : 'false',
 			deletion_token_hash: deletionGrant.tokenHash,
 			deletion_expires_at: String(deletionGrant.expiresAt),
 		},
@@ -437,6 +439,7 @@ export function pasteMetadataFromObject(obj: R2Object, id: string): StoredPaste 
 	const storedCompressedByteLength = Number(md.compressed_byte_length);
 	return {
 		id: (md.id || id).toUpperCase(),
+		...(md.format === 'bundle-v1' ? { format: 'bundle-v1' as const } : {}),
 		byte_length: Number.isSafeInteger(storedByteLength) && storedByteLength > 0
 			? storedByteLength
 			: obj.size,
@@ -470,8 +473,9 @@ export async function listPastesForAdmin(
 		cursor: options.cursor,
 		include: ["httpMetadata", "customMetadata"],
 	});
+	const retained = await pasteIndexStub(env).getRetainedMetadata(listed.objects.map(object => object.key.slice(PASTE_PREFIX.length)));
 	const metadata = listed.objects.map((object) =>
-		pasteMetadataFromObject(object, object.key.slice(PASTE_PREFIX.length))
+		retained[object.key.slice(PASTE_PREFIX.length)] ?? pasteMetadataFromObject(object, object.key.slice(PASTE_PREFIX.length))
 	);
 	const ids = metadata.map((item) => item.id);
 	const [hitCounts, moderations, automoderations] = await Promise.all([
@@ -507,7 +511,9 @@ export async function listPastesForAdmin(
 /** Read paste metadata without downloading or decoding its body. */
 export async function getPasteMetadata(env: Env, id: string): Promise<StoredPaste | null> {
 	const obj = await env.PASTES.head(pasteObjectKey(id));
-	return obj ? pasteMetadataFromObject(obj, id) : null;
+	if (!obj) return null;
+	const metadata = pasteMetadataFromObject(obj, id);
+	return (await getRetainedPaste(env, id))?.metadata ?? metadata;
 }
 
 /** Read the stored representation. The returned stream is gzip for new pastes. */
@@ -515,7 +521,7 @@ export async function getPasteObject(env: Env, id: string): Promise<StoredPasteO
 	const obj = await env.PASTES.get(pasteObjectKey(id));
 	if (!obj) return null;
 	return {
-		metadata: pasteMetadataFromObject(obj, id),
+		metadata: (await getRetainedPaste(env, id))?.metadata ?? pasteMetadataFromObject(obj, id),
 		body: obj.body,
 	};
 }
@@ -545,7 +551,7 @@ export async function deletePasteWithToken(
 	// Make the paste inaccessible and persist its origin metadata before removing
 	// the body. This way an R2 failure cannot accidentally expose content already
 	// marked as deleted, and a successful deletion never loses its audit trail.
-	await pasteIndexStub(env).markDeleted(id, pasteMetadataFromObject(object, id));
+	await pasteIndexStub(env).markDeleted(id, (await getRetainedPaste(env, id))?.metadata ?? pasteMetadataFromObject(object, id));
 	await env.PASTES.delete(pasteObjectKey(id));
 	return "deleted";
 }
@@ -592,7 +598,7 @@ export function defaultModeration(id: string): PasteModeration {
 	return {
 		paste_id: id.toUpperCase(),
 		decision: "unreviewed",
-		visibility: "visible",
+		visibility: "hidden",
 		reason: null,
 		moderated_by: null,
 		moderated_at: null,
@@ -604,7 +610,7 @@ function moderationFromRow(row: ModerationRow): PasteModeration {
 	return {
 		paste_id: row.paste_id,
 		decision: isModerationDecision(row.decision) ? row.decision : "unreviewed",
-		visibility: isPasteVisibility(row.visibility) ? row.visibility : "visible",
+		visibility: isPasteVisibility(row.visibility) ? row.visibility : "hidden",
 		reason: isReportCategory(row.reason) ? row.reason : null,
 		moderated_by: row.moderated_by,
 		moderated_at: row.moderated_at_ms === null ? null : new Date(row.moderated_at_ms).toISOString(),
@@ -657,6 +663,21 @@ export class PasteIndex extends DurableObject<Env> {
 			"CREATE INDEX IF NOT EXISTS paste_rate_events_created_at ON paste_rate_events(created_at_ms)",
 		);
 		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS paste_sharing (
+				paste_id TEXT PRIMARY KEY, escalated TEXT,
+				requests INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+				owner_requests INTEGER NOT NULL DEFAULT 0, owner_bytes INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE IF NOT EXISTS paste_metadata_requests (
+				paste_id TEXT PRIMARY KEY, owner_requests INTEGER NOT NULL DEFAULT 0,
+				audience_requests INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE IF NOT EXISTS paste_audience (
+				paste_id TEXT NOT NULL, ip TEXT NOT NULL,
+				PRIMARY KEY (paste_id, ip)
+			);
+		`);
+		this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS paste_hit_counts (
 				paste_id TEXT PRIMARY KEY,
 				hit_count INTEGER NOT NULL CHECK (hit_count >= 0)
@@ -697,6 +718,16 @@ export class PasteIndex extends DurableObject<Env> {
 				recorded_at_ms INTEGER NOT NULL
 			)
 		`);
+		const recordColumns = this.ctx.storage.sql.exec<{ name: string }>('PRAGMA table_info(paste_records)').toArray();
+		if (!recordColumns.some(column => column.name === 'preview')) {
+			this.ctx.storage.sql.exec("ALTER TABLE paste_records ADD COLUMN preview TEXT NOT NULL DEFAULT ''");
+			const recent = (await this.ctx.storage.get<RecentPaste[]>('recent')) ?? [];
+			for (const entry of recent) {
+				if (!entry || typeof entry.id !== 'string' || typeof entry.preview !== 'string') continue;
+				this.ctx.storage.sql.exec('UPDATE paste_records SET preview = ? WHERE paste_id = ?', entry.preview, entry.id.toUpperCase());
+			}
+		}
+		this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS paste_records_public_order ON paste_records(listed, json_extract(metadata_json, '$.created_at') DESC, paste_id DESC)");
 		this.ctx.storage.sql.exec(
 			"CREATE INDEX IF NOT EXISTS paste_records_content_type ON paste_records(json_extract(metadata_json, '$.content_type'))",
 		);
@@ -737,6 +768,13 @@ export class PasteIndex extends DurableObject<Env> {
 				reviewed_by TEXT
 			)
 		`);
+		// Policy upgrades reopen machine-only assessments, never human decisions.
+		this.ctx.storage.sql.exec(`UPDATE paste_automoderation SET requires_review = 1
+			WHERE (COALESCE(json_extract(assessment_json, '$.prompt_version'), 0) != ? OR
+				(COALESCE(json_extract(assessment_json, '$.model'), '') != ? AND
+				 (substr(COALESCE(json_extract(assessment_json, '$.model'), ''), 1, ?) != ? OR
+				  substr(COALESCE(json_extract(assessment_json, '$.model'), ''), ?) NOT GLOB ?))) AND reviewed_at_ms IS NULL`,
+			PROMPT_VERSION, MODEL, MODEL.length + 1, `${MODEL}-`, MODEL.length + 2, '[0-9]'.repeat(8));
 		this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS paste_reports (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -805,11 +843,11 @@ export class PasteIndex extends DurableObject<Env> {
 			);
 			if (metadata) {
 				this.ctx.storage.sql.exec(`
-					INSERT INTO paste_records (paste_id, metadata_json, listed, recorded_at_ms)
-					VALUES (?, ?, ?, ?)
+					INSERT INTO paste_records (paste_id, metadata_json, listed, recorded_at_ms, preview)
+					VALUES (?, ?, ?, ?, ?)
 					ON CONFLICT (paste_id) DO UPDATE SET
-						metadata_json = excluded.metadata_json, listed = excluded.listed
-				`, pasteId, JSON.stringify(metadata), includeInRecent ? 1 : 0, Date.now());
+						metadata_json = excluded.metadata_json, listed = excluded.listed, preview = excluded.preview
+				`, pasteId, JSON.stringify(metadata), includeInRecent ? 1 : 0, Date.now(), entry.preview);
 			}
 			if (assessment) {
 				const policy = initialModeration(assessment);
@@ -828,7 +866,11 @@ export class PasteIndex extends DurableObject<Env> {
 		});
 		if (includeInRecent) {
 			const recent = (await this.ctx.storage.get<RecentPaste[]>("recent")) ?? [];
-			await this.ctx.storage.put("recent", [entry, ...recent.filter((p) => p.id !== entry.id)].slice(0, Math.max(1, limit)));
+			const next = [entry, ...recent.filter((p) => p.id !== entry.id)].slice(0, Math.max(1, limit));
+			// SQLite retains the full data; this optional preview cache must fit
+			// the 128 KiB KV value limit even with long multibyte descriptions.
+			while (next.length > 1 && new TextEncoder().encode(JSON.stringify(next)).length > 112 * 1024) next.pop();
+			await this.ctx.storage.put("recent", next);
 		}
 	}
 
@@ -984,6 +1026,37 @@ export class PasteIndex extends DurableObject<Env> {
 		return Object.fromEntries(rows.map((row) => [row.paste_id, row.hit_count]));
 	}
 
+	/** Full public archive, independent of the bounded legacy recent-feed cache. */
+	listPublicPage(requestedPage = 1): PublicPastePage {
+		if (!Number.isSafeInteger(requestedPage) || requestedPage < 1) throw new Error('invalid public paste page');
+		const joins = `FROM paste_records p
+			JOIN paste_moderation_state s ON s.paste_id = p.paste_id
+			WHERE p.listed = 1 AND s.decision = 'approved' AND s.visibility = 'visible'
+			AND COALESCE(json_extract(p.metadata_json, '$.unlisted'), 0) = 0`;
+		const total = this.ctx.storage.sql.exec<{ total: number }>(`SELECT COUNT(*) AS total ${joins}`).one().total;
+		const totalPages = Math.max(1, Math.ceil(total / PUBLIC_PASTES_PAGE_SIZE));
+		const page = Math.min(requestedPage, totalPages);
+		const rows = this.ctx.storage.sql.exec<{ paste_id: string; metadata_json: string; preview: string; hit_count: number }>(`
+			SELECT p.paste_id, p.metadata_json, p.preview,
+				COALESCE((SELECT hit_count FROM paste_hit_counts h WHERE h.paste_id = p.paste_id), 0) AS hit_count
+			${joins}
+			ORDER BY json_extract(p.metadata_json, '$.created_at') DESC, p.paste_id DESC
+			LIMIT ? OFFSET ?
+		`, PUBLIC_PASTES_PAGE_SIZE, (page - 1) * PUBLIC_PASTES_PAGE_SIZE).toArray();
+		return {
+			items: rows.map(row => {
+				const metadata = storedPasteFromJson(row.metadata_json, row.paste_id);
+				return {
+					id: metadata.id, byte_length: metadata.byte_length, sha256: metadata.sha256,
+					created_at: metadata.created_at, region_id: metadata.region_id, region: metadata.region,
+					content_type: metadata.content_type, description: metadata.description, filename: metadata.filename,
+					pow_difficulty: metadata.proof_of_work?.difficulty ?? null, preview: row.preview, hit_count: row.hit_count,
+				};
+			}),
+			page, page_size: PUBLIC_PASTES_PAGE_SIZE, total, total_pages: totalPages,
+		};
+	}
+
 	async list(limit = RECENT_PASTE_LIMIT): Promise<RecentPaste[]> {
 		const recent = (await this.ctx.storage.get<RecentPaste[]>("recent")) ?? [];
 		if (recent.length === 0) return recent;
@@ -995,18 +1068,79 @@ export class PasteIndex extends DurableObject<Env> {
 			...ids,
 		).toArray();
 		const visibilityRows = this.ctx.storage.sql.exec<{ paste_id: string; visibility: string }>(
-			`SELECT paste_id, visibility FROM paste_moderation_state WHERE paste_id IN (${placeholders})`,
+			`SELECT paste_id, visibility FROM paste_moderation_state WHERE decision = 'approved' AND paste_id IN (${placeholders})`,
 			...ids,
 		).toArray();
 		const hitCounts = new Map(hitRows.map((row) => [row.paste_id, row.hit_count]));
 		const visibilities = new Map(visibilityRows.map((row) => [row.paste_id, row.visibility]));
 		return recent
-			.filter((item) => (visibilities.get(item.id.toUpperCase()) ?? "visible") === "visible")
+			.filter((item) => visibilities.get(item.id.toUpperCase()) === "visible")
 			.slice(0, Math.max(1, limit))
 			.map((item) => ({
 				...item,
 				hit_count: hitCounts.get(item.id.toUpperCase()) ?? 0,
 			}));
+	}
+
+	/** Synchronous SQL admission is the authority, including concurrent first viewers.
+	 * No R2 reads or external I/O may occur before this decision. */
+	authorizeAccess(id: string, ip: string | null, bodyBytes: number, admit: boolean): SharingAccess {
+		const pasteId = id.toUpperCase();
+		return this.ctx.storage.transactionSync(() => {
+			const retained = this.getRetainedPaste(pasteId);
+			const denied = (state: SharingAccess['state'], reason: string): SharingAccess => ({ allowed: false, state, reason });
+			if (!retained || retained.moderation.visibility === 'deleted') return denied('missing', 'Paste not found');
+			const { moderation, automoderation, metadata } = retained;
+			if (moderation.visibility !== 'visible') return denied('review', 'This paste is awaiting a moderation decision');
+			if (moderation.decision === 'approved') return { allowed: true, state: 'approved', reason: 'Human-approved for public access' };
+			if (moderation.decision !== 'unreviewed' || !automoderation || initialModeration(automoderation).visibility !== 'visible') {
+				return denied('review', 'Human review is required');
+			}
+			if (!ip) return denied('review', 'An edge IP identity is required for limited sharing');
+			this.ctx.storage.sql.exec('INSERT OR IGNORE INTO paste_sharing (paste_id) VALUES (?)', pasteId);
+			const row = this.ctx.storage.sql.exec<{ escalated: string | null; requests: number; bytes: number; owner_requests: number; owner_bytes: number }>(
+				'SELECT * FROM paste_sharing WHERE paste_id = ?', pasteId).one();
+			const owner = ip === metadata.upload_metadata['cf-connecting-ip'];
+			const audience = this.ctx.storage.sql.exec<{ ip: string }>('SELECT ip FROM paste_audience WHERE paste_id = ?', pasteId).toArray();
+			const escalate = (reason: string) => {
+				this.ctx.storage.sql.exec('UPDATE paste_sharing SET escalated = COALESCE(escalated, ?) WHERE paste_id = ?', reason, pasteId);
+				this.ctx.storage.sql.exec('UPDATE paste_automoderation SET requires_review = 1, reviewed_at_ms = NULL, reviewed_by = NULL WHERE paste_id = ?', pasteId);
+				return denied('review', reason);
+			};
+			if (!owner) {
+				if (row.escalated) return denied('review', row.escalated);
+				if (!audience.some(viewer => viewer.ip === ip)) {
+					if (!admit) return denied('limited', 'Open the paste to join its limited audience');
+					if (audience.length >= SHARING_LIMITS.recipients) return escalate('The limited audience is full; human review is required for wider sharing');
+					this.ctx.storage.sql.exec('INSERT INTO paste_audience (paste_id, ip) VALUES (?, ?)', pasteId, ip);
+				}
+				if (bodyBytes > 0 && (row.requests >= SHARING_LIMITS.requests || row.bytes + bodyBytes > SHARING_LIMITS.bytes)) {
+					return escalate('The sharing traffic budget was reached; human review is required');
+				}
+			} else if (bodyBytes > 0 && (row.owner_requests >= SHARING_LIMITS.ownerRequests || row.owner_bytes + bodyBytes > SHARING_LIMITS.ownerBytes)) {
+				return escalate('The uploader traffic budget was reached; human review is required');
+			}
+			if (admit && bodyBytes === 0) {
+				this.ctx.storage.sql.exec('INSERT OR IGNORE INTO paste_metadata_requests (paste_id) VALUES (?)', pasteId);
+				const counts = this.ctx.storage.sql.exec<{ owner_requests: number; audience_requests: number }>('SELECT * FROM paste_metadata_requests WHERE paste_id = ?', pasteId).one();
+				if ((owner ? counts.owner_requests >= 500 : counts.audience_requests >= 250)) return escalate('The metadata request budget was reached; human review is required');
+				this.ctx.storage.sql.exec(owner ? 'UPDATE paste_metadata_requests SET owner_requests = owner_requests + 1 WHERE paste_id = ?'
+					: 'UPDATE paste_metadata_requests SET audience_requests = audience_requests + 1 WHERE paste_id = ?', pasteId);
+			}
+			if (bodyBytes > 0) {
+				this.ctx.storage.sql.exec(owner
+					? 'UPDATE paste_sharing SET owner_requests = owner_requests + 1, owner_bytes = owner_bytes + ? WHERE paste_id = ?'
+					: 'UPDATE paste_sharing SET requests = requests + 1, bytes = bytes + ? WHERE paste_id = ?', bodyBytes, pasteId);
+			}
+			return { allowed: true, state: row.escalated ? 'owner-review' : 'limited', reason: row.escalated ?? 'AI-cleared for uploader and three other IPs; not publicly approved' };
+		});
+	}
+
+	getSharing(id: string): { escalated: string | null; recipients: number; requests: number; bytes: number } {
+		const pasteId = id.toUpperCase();
+		const row = this.ctx.storage.sql.exec<{ escalated: string | null; requests: number; bytes: number }>('SELECT escalated, requests, bytes FROM paste_sharing WHERE paste_id = ?', pasteId).toArray()[0];
+		const recipients = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM paste_audience WHERE paste_id = ?', pasteId).one().count;
+		return { escalated: row?.escalated ?? null, recipients, requests: row?.requests ?? 0, bytes: row?.bytes ?? 0 };
 	}
 
 	getModeration(id: string): PasteModeration {
@@ -1090,7 +1224,7 @@ export class PasteIndex extends DurableObject<Env> {
 			SELECT 1 FROM paste_reports r WHERE r.paste_id = p.paste_id
 			AND r.id > COALESCE(s.reviewed_report_id, 0)
 		)`;
-		const hasPendingAutomoderation = "a.requires_review = 1 AND a.reviewed_at_ms IS NULL AND COALESCE(s.visibility, 'visible') != 'deleted'";
+		const hasPendingAutomoderation = "((a.requires_review = 1 AND a.reviewed_at_ms IS NULL) OR (a.paste_id IS NULL AND COALESCE(s.decision, 'unreviewed') = 'unreviewed')) AND COALESCE(s.visibility, 'hidden') != 'deleted'";
 		if (reports === "pending") where.push(`(${hasPendingReport} OR (${hasPendingAutomoderation}))`);
 		if (reports === "reported") where.push(hasReport);
 		if (reports === "unreported") where.push(`NOT ${hasReport}`);
@@ -1099,7 +1233,7 @@ export class PasteIndex extends DurableObject<Env> {
 			parameters.push(options.decision);
 		}
 		if (options.visibility !== undefined) {
-			where.push("COALESCE(s.visibility, 'visible') = ?");
+			where.push("COALESCE(s.visibility, 'hidden') = ?");
 			parameters.push(options.visibility);
 		}
 		if (options.reportReason !== undefined) {
@@ -1181,14 +1315,23 @@ export class PasteIndex extends DurableObject<Env> {
 					hit_count: row.hit_count,
 					reports: reportsByPaste.get(row.paste_id) ?? [],
 					report_count: row.report_count,
+					sharing: this.getSharing(row.paste_id),
 					pending_review: (row.latest_report_id !== null && row.latest_report_id > moderation.reviewed_through_report_id) ||
-						(automoderation?.requires_review === true && moderation.visibility !== "deleted"),
+						((automoderation?.requires_review === true || !automoderation && moderation.decision === 'unreviewed') && moderation.visibility !== "deleted"),
 				};
 			}),
 			total,
 			offset,
 			next_offset: offset + rows.length < total ? offset + rows.length : null,
 		};
+	}
+
+	getRetainedMetadata(ids: string[]): Record<string, StoredPaste> {
+		const normalized = [...new Set(ids.map(id => id.toUpperCase()))].slice(0, 1000);
+		if (!normalized.length) return {};
+		const rows = this.ctx.storage.sql.exec<{ paste_id: string; metadata_json: string }>(
+			`SELECT paste_id, metadata_json FROM paste_records WHERE paste_id IN (${normalized.map(() => '?').join(',')})`, ...normalized).toArray();
+		return Object.fromEntries(rows.map(row => [row.paste_id, storedPasteFromJson(row.metadata_json, row.paste_id)]));
 	}
 
 	getRetainedPaste(id: string): RetainedPaste | null {

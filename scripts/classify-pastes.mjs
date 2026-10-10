@@ -132,10 +132,20 @@ async function classifyPaste(id, { baseUrl, maxBytes, key, fetchImpl }) {
 		createHash("sha256").update(bytes).digest("hex") !== metadata.sha256) {
 		throw new Error("Paste content: length or SHA-256 mismatch");
 	}
-	const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	if (/^data:(?:image|audio|video)\//i.test(content.trimStart())) {
-		return { id, status: "skipped", reason: "image, audio, and video moderation is not supported by the documented Jev API" };
+	let content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	if (metadata.format === 'bundle-v1') {
+		const bundle = JSON.parse(content);
+		if (bundle.format !== 'bundle-v1' || !Array.isArray(bundle.files) || !bundle.files.length || bundle.files.length > 16 ||
+			bundle.files.some(file => typeof file.name !== 'string' || typeof file.content !== 'string' || typeof file.content_type !== 'string')) throw new Error('Paste content: invalid file bundle');
+		if (bundle.files.some(file => ['png', 'jpeg', 'webp', 'gif', 'mp3', 'mp4'].includes(file.content_type))) {
+			return { id, status: 'skipped', reason: 'bundle contains media that Jev cannot inspect' };
+		}
+		content = bundle.files.map(file => `File: ${JSON.stringify(file.name)} (${file.content_type})\n${file.content}`).join('\n\n');
 	}
+	if (/data:[^\s;,]+(?:;[^\s,]*)?;base64,/i.test(content)) {
+		return { id, status: "skipped", reason: "image, audio, video, and encoded binary moderation is not supported by the documented Jev API" };
+	}
+	if (new TextEncoder().encode(content).length > maxBytes) return { id, status: 'skipped', reason: 'combined file text exceeds --max-bytes' };
 	const result = await fetchJson(fetchImpl, DECISIONS_URL, {
 		method: "POST",
 		headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },

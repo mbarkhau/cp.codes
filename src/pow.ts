@@ -15,13 +15,14 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { uploadCostUnits, sizeDifficultyBits, trafficDifficultyBits, WINDOW_MS, MAX_IP_COST_UNITS, MAX_GLOBAL_COST_UNITS, MAX_CHALLENGES_PER_IP, MAX_GLOBAL_CHALLENGES } from '../public/policy.js';
 
 /** A SHA-256 digest cannot have more than 256 leading zero bits. */
 export const MAX_POW_DIFFICULTY_BITS = 256;
 
 export const POW_DEFAULTS = {
 	/** Base number of leading zero bits required on the SHA-256 digest. */
-	difficultyBits: 18,
+	difficultyBits: 16,
 	/** Rolling window used to increase difficulty under upload load. */
 	rateWindowSeconds: 10 * 60,
 	/** The paste count at which the first extra difficulty bit applies. */
@@ -30,12 +31,13 @@ export const POW_DEFAULTS = {
 	ttlSeconds: 600,
 } as const;
 
-const CHALLENGE_VERSION = 1 as const;
+const CHALLENGE_VERSION = 2 as const;
 const KEY_HEX_STORAGE_NAME = "hmac-key:v1";
 const KEY_BYTE_LENGTH = 32;
-const SIGNING_DOMAIN = "cp.codes:pow-challenge:v1:";
+const SIGNING_DOMAIN = "cp.codes:pow-challenge:v2:";
 const CHALLENGE_FIELD_NAMES = [
 	"version",
+	"requester_hash",
 	"challenge_id",
 	"nonce",
 	"difficulty",
@@ -51,6 +53,7 @@ const CHALLENGE_FIELD_NAMES = [
 /** The complete signed challenge returned by the API and submitted with a proof. */
 export type PublicChallenge = {
 	version: typeof CHALLENGE_VERSION;
+	requester_hash: string;
 	challenge_id: string;
 	/** Server-issued random nonce (hex). */
 	nonce: string;
@@ -91,11 +94,12 @@ export function powConfigFromEnv(env: Env): PowConfig {
 
 function parseNonNegInt(raw: string | undefined, fallback: number): number {
 	if (raw === undefined || raw === "") return fallback;
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 0 ? n : fallback;
+	if (!/^[0-9]+$/.test(raw)) return fallback;
+	const n = Number(raw);
+	return Number.isSafeInteger(n) && n >= 0 ? Math.min(n, MAX_POW_DIFFICULTY_BITS) : fallback;
 }
 
-/** The 15th recent paste adds one bit, the 16th adds two, and so on. */
+/** Logarithmic congestion adjustment: work scales with recent cost units. */
 export function difficultyForRecentPastes(
 	baseDifficultyBits: number,
 	recentPasteCount: number,
@@ -106,10 +110,7 @@ export function difficultyForRecentPastes(
 	if (!Number.isInteger(recentPasteCount) || recentPasteCount < 0) {
 		throw new Error("recent paste count out of range");
 	}
-	const extraBits = Math.max(
-		0,
-		recentPasteCount - POW_DEFAULTS.rateThreshold + 1,
-	);
+	const extraBits = trafficDifficultyBits(recentPasteCount);
 	return baseDifficultyBits + extraBits;
 }
 
@@ -255,6 +256,7 @@ function base64UrlDecode(value: string): Uint8Array {
 function signingInput(challenge: UnsignedChallenge): Uint8Array {
 	const fields = [
 		challenge.version,
+		challenge.requester_hash,
 		challenge.challenge_id,
 		challenge.nonce,
 		challenge.difficulty,
@@ -276,6 +278,7 @@ function parsePublicChallenge(value: unknown): PublicChallenge | null {
 		keys.length !== CHALLENGE_FIELD_NAMES.length ||
 		CHALLENGE_FIELD_NAMES.some((name) => !Object.hasOwn(rec, name)) ||
 		rec.version !== CHALLENGE_VERSION ||
+		!isContentHash(rec.requester_hash) ||
 		typeof rec.challenge_id !== "string" ||
 		!/^[0-9a-f]{32}$/.test(rec.challenge_id) ||
 		typeof rec.nonce !== "string" ||
@@ -337,9 +340,9 @@ async function signingKey(env: Env): Promise<CryptoKey> {
 
 export async function issueChallenge(
 	env: Env,
-	input: { contentHash: string; byteLength: number; difficulty: number },
+	input: { contentHash: string; byteLength: number; difficulty: number; requesterHash: string },
 ): Promise<PublicChallenge> {
-	if (!isContentHash(input.contentHash)) throw new Error("invalid content hash");
+	if (!isContentHash(input.contentHash) || !isContentHash(input.requesterHash)) throw new Error("invalid content or requester hash");
 	if (!Number.isSafeInteger(input.byteLength) || input.byteLength < 1) {
 		throw new Error("byte length out of range");
 	}
@@ -353,6 +356,7 @@ export async function issueChallenge(
 	const now = Date.now();
 	const unsigned: UnsignedChallenge = {
 		version: CHALLENGE_VERSION,
+		requester_hash: input.requesterHash,
 		challenge_id: randomHex(16),
 		nonce: randomHex(16),
 		difficulty: input.difficulty,
@@ -397,8 +401,8 @@ export async function verifyChallenge(env: Env, value: unknown): Promise<PublicC
 }
 
 /**
- * Stores one automatically generated signing key, difficulty settings, and successful redemptions.
- * Issuance never stores challenge records; first access only initializes the key.
+ * Stores the signing key, settings, issuance counters and priced admissions.
+ * Challenges themselves remain signed and stateless; admitted attempts are durable.
  */
 export class PowKey extends DurableObject<Env> {
 	readonly #keyHex: string;
@@ -416,12 +420,25 @@ export class PowKey extends DurableObject<Env> {
 				updated_at TEXT NOT NULL,
 				updated_by TEXT NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS pow_settings_text (
+				name TEXT PRIMARY KEY, value TEXT NOT NULL,
+				updated_at TEXT NOT NULL, updated_by TEXT NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS pow_redemptions (
 				challenge_id TEXT PRIMARY KEY,
 				expires_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS pow_redemptions_expires_at
 				ON pow_redemptions(expires_at);
+			CREATE TABLE IF NOT EXISTS pow_admissions (
+				challenge_id TEXT PRIMARY KEY, requester_hash TEXT NOT NULL,
+				created_at INTEGER NOT NULL, units REAL NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS pow_admissions_time ON pow_admissions(created_at);
+			CREATE INDEX IF NOT EXISTS pow_admissions_ip ON pow_admissions(requester_hash, created_at);
+			CREATE TABLE IF NOT EXISTS pow_issuance (
+				requester_hash TEXT PRIMARY KEY, started_at INTEGER NOT NULL, count INTEGER NOT NULL
+			);
 		`);
 		const existing = this.ctx.storage.sql
 			.exec<{ key_hex: string }>("SELECT key_hex FROM pow_key WHERE name = ?", KEY_HEX_STORAGE_NAME)
@@ -446,27 +463,86 @@ export class PowKey extends DurableObject<Env> {
 		return this.#keyHex;
 	}
 
-	getDifficultySettings(): PowDifficultySettings {
+	getDifficultySettings(): PowDifficultySettings & { shortIdIncrement: number } {
 		const row = this.ctx.storage.sql.exec<{
 			difficulty_bits: number | null; updated_at: string; updated_by: string;
 		}>("SELECT difficulty_bits, updated_at, updated_by FROM pow_settings WHERE name = ?", "minimum")
 			.toArray()[0];
+		const increment = this.ctx.storage.sql.exec<{ value: string }>(
+			"SELECT value FROM pow_settings_text WHERE name = ?", "short_id_increment",
+		).toArray()[0]?.value;
 		return {
 			difficultyBits: row?.difficulty_bits ?? null,
+			shortIdIncrement: increment === undefined ? 1 : Number(increment),
 			updatedAt: row?.updated_at ?? null,
 			updatedBy: row?.updated_by ?? null,
 		};
 	}
 
-	setDifficultySettings(difficultyBits: number | null, updatedBy: string): void {
+	setDifficultySettings(difficultyBits: number | null, updatedBy: string, shortIdIncrement = 1): void {
 		if (difficultyBits !== null && !isDifficultyBits(difficultyBits)) throw new Error("difficulty out of range");
+		if (typeof shortIdIncrement !== 'number' || !Number.isFinite(shortIdIncrement) || shortIdIncrement < 0 || shortIdIncrement > 64) throw new Error('short ID increment out of range');
 		if (typeof updatedBy !== "string" || !updatedBy) throw new Error("staff username required");
+		const now = new Date().toISOString();
 		this.ctx.storage.sql.exec(
 			`INSERT INTO pow_settings (name, difficulty_bits, updated_at, updated_by) VALUES (?, ?, ?, ?)
 			 ON CONFLICT(name) DO UPDATE SET difficulty_bits = excluded.difficulty_bits,
 			 updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-			"minimum", difficultyBits, new Date().toISOString(), updatedBy,
+			"minimum", difficultyBits, now, updatedBy,
 		);
+		this.ctx.storage.sql.exec(`INSERT INTO pow_settings_text (name, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+			ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+			'short_id_increment', String(shortIdIncrement), now, updatedBy);
+	}
+
+	/** Fixed-window issuance bound is independent of proof search and upload success. */
+	allowChallenge(requesterHash: string): boolean {
+		const now = Date.now();
+		this.ctx.storage.sql.exec('DELETE FROM pow_issuance WHERE started_at <= ?', now - WINDOW_MS);
+		const total = this.ctx.storage.sql.exec<{ count: number }>('SELECT COALESCE(SUM(count), 0) AS count FROM pow_issuance').one().count;
+		if (total >= MAX_GLOBAL_CHALLENGES) return false;
+		const row = this.ctx.storage.sql.exec<{ count: number }>('SELECT count FROM pow_issuance WHERE requester_hash = ?', requesterHash).toArray()[0];
+		if ((row?.count ?? 0) >= MAX_CHALLENGES_PER_IP) return false;
+		this.ctx.storage.sql.exec(`INSERT INTO pow_issuance (requester_hash, started_at, count) VALUES (?, ?, 1)
+			ON CONFLICT(requester_hash) DO UPDATE SET count = count + 1`, requesterHash, now);
+		return true;
+	}
+
+	getAdmissionUnits(requesterHash?: string): number {
+		return this.ctx.storage.sql.exec<{ units: number }>(requesterHash
+			? 'SELECT COALESCE(SUM(units), 0) AS units FROM pow_admissions WHERE created_at > ? AND requester_hash = ?'
+			: 'SELECT COALESCE(SUM(units), 0) AS units FROM pow_admissions WHERE created_at > ?',
+			Date.now() - WINDOW_MS, ...(requesterHash ? [requesterHash] : [])).one().units;
+	}
+
+	/** A quote must not ask clients to solve work when it is already unaffordable.
+	 * This is only a snapshot; redemption still performs the atomic reservation. */
+	canAffordUpload(byteLength: number, requesterHash: string): boolean {
+		const units = uploadCostUnits(byteLength);
+		return this.getAdmissionUnits() + units <= MAX_GLOBAL_COST_UNITS &&
+			this.getAdmissionUnits(requesterHash) + units <= MAX_IP_COST_UNITS;
+	}
+
+	/** Proof was authenticated by the Worker. Revalidate price AND reserve cost
+	 * atomically before decompression / paid AI. Failed submissions still consume
+	 * the reservation, so errors and parallel prefetch cannot avoid the budget. */
+	admit(challenge: PublicChallenge, baseDifficulty: number): 'ok' | 'replay' | 'stale' | 'budget' {
+		return this.ctx.storage.transactionSync(() => {
+			const now = Date.now();
+			if (challenge.expires_at <= now) return 'stale';
+			if (this.ctx.storage.sql.exec('SELECT challenge_id FROM pow_redemptions WHERE challenge_id = ?', challenge.challenge_id).toArray().length) return 'replay';
+			const units = uploadCostUnits(challenge.byte_length);
+			const globalUnits = this.getAdmissionUnits();
+			const ipUnits = this.getAdmissionUnits(challenge.requester_hash);
+			if (globalUnits + units > MAX_GLOBAL_COST_UNITS || ipUnits + units > MAX_IP_COST_UNITS) return 'budget';
+			const base = this.getDifficultySettings().difficultyBits ?? baseDifficulty;
+			const required = Math.min(MAX_POW_DIFFICULTY_BITS, base + trafficDifficultyBits(globalUnits) + trafficDifficultyBits(ipUnits) + sizeDifficultyBits(challenge.byte_length));
+			if (challenge.difficulty < required) return 'stale';
+			if (!this.redeem(challenge.challenge_id, challenge.expires_at)) return 'replay';
+			this.ctx.storage.sql.exec('DELETE FROM pow_admissions WHERE created_at <= ?', now - WINDOW_MS);
+			this.ctx.storage.sql.exec('INSERT INTO pow_admissions (challenge_id, requester_hash, created_at, units) VALUES (?, ?, ?, ?)', challenge.challenge_id, challenge.requester_hash, now, units);
+			return 'ok';
+		});
 	}
 
 	/** Atomically claim a successfully verified challenge and reject replays. */

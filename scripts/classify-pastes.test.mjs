@@ -56,7 +56,7 @@ function fixtureFetch({ content = CONTENT, encoding = "gzip", meta = {}, answer 
 	return { fetchImpl, calls };
 }
 
-Deno.test("single ID: verifies gzip and sends the six-way choice request", async () => {
+Deno.test("single ID: verifies gzip and sends the safety-aware choice request", async () => {
 	const { fetchImpl, calls } = fixtureFetch();
 	const result = await execute([ID.toLowerCase()], fetchImpl);
 	assertEquals(result.code, 0);
@@ -75,10 +75,19 @@ Deno.test("single ID: verifies gzip and sends the six-way choice request", async
 	assertEquals(body.model, MODEL);
 	assertEquals(body.state, { content_type: "javascript", content: CONTENT });
 	assertEquals(body.questions.category.type, "choice");
-	assertEquals(Object.keys(body.questions.category.criteria), ["spam", "phishing", "csam", "code", "plaintext", "ascii"]);
+	assertEquals(Object.keys(body.questions.category.criteria), ["spam", "phishing", "csam", "unsafe", "code", "plaintext", "ascii"]);
 	assertMatch(body.questions.category.instructions, /untrusted data/);
 	assert(!result.out[0].includes(CONTENT));
 	assert(!result.out[0].includes(KEY));
+});
+
+Deno.test("CLI accepts and retains the concrete dated Jev model", async () => {
+	const model = `${MODEL}-20260917`;
+	const { fetchImpl } = fixtureFetch({ answer: { ...decision(), model } });
+	const result = await execute([ID], fetchImpl);
+	assertEquals(result.code, 0);
+	assertEquals(JSON.parse(result.out[0]).model, model);
+	assertEquals(JSON.parse(result.out[0]).status, "classified");
 });
 
 Deno.test("no ID: requests latest 20 and processes each once in server order", async () => {
@@ -128,8 +137,32 @@ Deno.test("media and oversized bodies are explicitly skipped without a model cal
 	}
 });
 
+Deno.test('text bundles assess every sibling file together', async () => {
+	const content = JSON.stringify({ format: 'bundle-v1', primary: 'readme.md', files: [
+		{ name: 'readme.md', content_type: 'markdown', content: '# Hello' },
+		{ name: 'hello.js', content_type: 'javascript', content: 'console.log(42)' },
+	] });
+	const { fetchImpl, calls } = fixtureFetch({ content, meta: { format: 'bundle-v1' } });
+	const result = await execute([ID], fetchImpl);
+	assertEquals(JSON.parse(result.out[0]).status, 'classified');
+	const state = JSON.parse(calls[2].options.body).state.content;
+	assertEquals(state.includes('# Hello') && state.includes('hello.js') && state.includes('console.log(42)'), true);
+});
+
+Deno.test('bundles containing media or encoded binary never reach Jev', async () => {
+	for (const file of [
+		{ name: 'image.png', content_type: 'png', content: 'data:image/png;base64,eA==' },
+		{ name: 'binary.txt', content_type: 'plaintext', content: 'data:application/octet-stream;base64,eA==' },
+	]) {
+		const content = JSON.stringify({ format: 'bundle-v1', primary: 'readme.md', files: [{ name: 'readme.md', content_type: 'markdown', content: '# Hello' }, file] });
+		const { fetchImpl, calls } = fixtureFetch({ content, meta: { format: 'bundle-v1' } });
+		const result = await execute([ID], fetchImpl);
+		assertEquals(JSON.parse(result.out[0]).status, 'skipped'); assertEquals(calls.length, 2);
+	}
+});
+
 Deno.test("media data URLs with misleading metadata never reach Jev", async () => {
-	for (const mime of ["image/gif", "audio/mpeg", "video/mp4"]) {
+	for (const mime of ["image/gif", "audio/mpeg", "video/mp4", 'application/octet-stream']) {
 		const { fetchImpl, calls } = fixtureFetch({ content: `data:${mime};base64,eA==`, meta: { content_type: "plaintext" } });
 		const result = await execute([ID], fetchImpl);
 		assertEquals(result.code, 0);

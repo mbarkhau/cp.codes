@@ -1,6 +1,8 @@
 import { CONTENT_TYPES, rawContentType } from "./content_type";
+import { bundleFileResponse } from './bundle';
 import * as paste from "./paste";
-import { hexToBytes, isDifficultyBits, MAX_POW_DIFFICULTY_BITS, powKeyStub, sha256Hex } from "./pow";
+import { isDifficultyBits, MAX_POW_DIFFICULTY_BITS, powKeyStub } from "./pow";
+import { staffUsers, verifyStaffCredentials, developmentStaffEnabled } from './staff';
 import { getPowDifficultyState, type PowDifficultyState } from "./pow_settings";
 import { layout, viewPage } from "./ui";
 import {
@@ -10,26 +12,6 @@ import {
 
 export type StaffRole = "admin" | "mod";
 export type StaffUser = { username: string; role: StaffRole };
-type StoredStaffUser = StaffUser & { usernameHash: string; passwordHash: string };
-
-// Keep credentials out of every serializable staff response. Production should
-// replace this bootstrap account mechanism with a managed identity provider.
-const STORED_USERS: readonly StoredStaffUser[] = [
-	{
-		username: "admin",
-		role: "admin",
-		usernameHash: "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918",
-		passwordHash: "6a4e4054fa6e08046c40df5745530cdde6e4e091de831d04d7d902635b9350ac",
-	},
-	{
-		username: "moderator",
-		role: "mod",
-		usernameHash: "cfde2ca5188afb7bdd0691c7bef887baba78b709aadde8e8c535329d5751e6fe",
-		passwordHash: "f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7",
-	},
-] as const;
-
-export const STAFF_USERS: readonly StaffUser[] = STORED_USERS.map(({ username, role }) => ({ username, role }));
 
 function parseBasicCredentials(request: Request): { username: string; password: string } | null {
 	const authorization = request.headers.get("authorization");
@@ -47,32 +29,15 @@ function parseBasicCredentials(request: Request): { username: string; password: 
 	}
 }
 
-function hashesEqual(actual: string, expected: string): boolean {
-	return crypto.subtle.timingSafeEqual(hexToBytes(actual), hexToBytes(expected));
-}
-
-async function authenticateCredentials(username: string, password: string): Promise<StaffUser | null> {
-	if (username.length > 100 || password.length > 256) return null;
-	const [usernameHash, passwordHash] = await Promise.all([
-		sha256Hex(username),
-		sha256Hex(password),
-	]);
-	let authenticated: StaffUser | null = null;
-	for (const user of STORED_USERS) {
-		const usernameMatches = hashesEqual(usernameHash, user.usernameHash);
-		const passwordMatches = hashesEqual(passwordHash, user.passwordHash);
-		if (usernameMatches && passwordMatches) authenticated = { username: user.username, role: user.role };
-	}
-	return authenticated;
-}
-
 export async function authenticateStaff(request: Request, env: Env): Promise<StaffUser | null> {
 	const username = await sessionUsername(request, env);
-	const user = STAFF_USERS.find((candidate) => candidate.username === username);
+	const user = staffUsers(env).find((candidate) => candidate.username === username);
 	if (user) return { ...user };
 	// Explicit Basic Auth remains supported for CLI/API clients; browsers use cookies.
 	const credentials = parseBasicCredentials(request);
-	return credentials ? authenticateCredentials(credentials.username, credentials.password) : null;
+	if (!credentials) return null;
+	if (!developmentStaffEnabled(env) && !await allowLoginAttempt(request, env)) return null;
+	return verifyStaffCredentials(credentials.username, credentials.password, env);
 }
 
 function staffHeaders(contentType: string): Headers {
@@ -226,7 +191,7 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
 	const username = form.get("username");
 	const password = form.get("password");
 	const user = typeof username === "string" && typeof password === "string"
-		? await authenticateCredentials(username, password) : null;
+		? await verifyStaffCredentials(username, password, env) : null;
 	if (!user) return loginPage(next, "Invalid username or password.", 401);
 	const token = await createSession(env, user.username);
 	await revokeSession(request, env); // Rotate any previous session after successful authentication.
@@ -328,9 +293,9 @@ function moderationFormParts(item: paste.ReviewPaste, returnTo: string): {
 	return {
 		approve: item.moderation.decision === "approved"
 			? ""
-			: `<form class="cell-action" method="post" action="/admin/paste/${id}">${common}<input type="hidden" name="action" value="approve" /><button type="submit"${deleted ? " disabled" : ""}>Approve</button></form>`,
-		classification: `<form class="classify-form classification-action" method="post" action="/admin/paste/${id}">${common}<input type="hidden" name="action" value="classify" /><label><span class="sr-only">Classify ${escapeHtml(item.metadata.id)}</span><select name="reason"${deleted ? " disabled" : ""}><option value="">Classify…</option>${paste.REPORT_CATEGORIES.map((reason) => `<option value="${escapeHtml(reason)}">${escapeHtml(reason)}</option>`).join("")}</select></label></form>`,
-		visibility: `<form class="cell-action" method="post" action="/admin/paste/${id}">${common}<input type="hidden" name="action" value="toggle_visibility" /><button class="secondary" type="submit"${deleted ? " disabled" : ""}>${hidden ? "Show" : "Hide"}</button></form>`,
+			: `<form class="cell-action" method="post" action="/admin/paste/${id}">${common}<input type="hidden" name="action" value="approve" /><button type="submit"${deleted ? " disabled" : ""}>Approve public access</button></form>`,
+		classification: `<form class="classify-form classification-action" method="post" action="/admin/paste/${id}">${common}<input type="hidden" name="action" value="classify" /><label><span class="sr-only">Classify ${escapeHtml(item.metadata.id)}</span><select name="reason"${deleted ? " disabled" : ""}><option value="">Classify…</option>${paste.REPORT_CATEGORIES.map((reason) => `<option value="${escapeHtml(reason)}">${escapeHtml(reason)}</option>`).join("")}</select></label><button type="submit">Restrict &amp; hide</button></form>`,
+		visibility: `<form class="cell-action" method="post" action="/admin/paste/${id}">${common}<input type="hidden" name="action" value="toggle_visibility" /><button class="secondary" type="submit"${deleted ? " disabled" : ""}>${hidden ? "Restore visibility (still gated)" : "Hide"}</button></form>`,
 	};
 }
 
@@ -347,7 +312,7 @@ function reportsCell(item: paste.ReviewPaste): string {
 function pasteTable(items: paste.ReviewPaste[], returnTo: string): string {
 	if (items.length === 0) return `<p class="empty">No pastes match these filters.</p>`;
 	return `<div class="table-wrap"><table class="review-table">
-<thead><tr><th>Paste</th><th>User reports</th><th>Visibility</th><th>Decision</th><th>Classification</th><th>Last moderated</th><th>Info</th></tr></thead>
+<thead><tr><th>Paste</th><th>Why review?</th><th>Visibility</th><th>Decision</th><th>Classification</th><th>Last moderated</th><th>Info</th></tr></thead>
 <tbody>${items.map((item) => {
 	const metadata = item.metadata;
 	const moderation = item.moderation;
@@ -358,8 +323,8 @@ function pasteTable(items: paste.ReviewPaste[], returnTo: string): string {
 		: moderation.decision;
 	return `<tr${item.pending_review ? ` class="pending-row"` : ""}>
 	<td><a class="mono strong" href="${reviewUrl}/view">${escapeHtml(metadata.id)}</a><br><span class="small">${escapeHtml(metadata.created_at)} · ${metadata.byte_length.toLocaleString("en-US")} B · ${item.hit_count.toLocaleString("en-US")} hits</span></td>
-	<td>${reportsCell(item)}</td>
-	<td><span class="visibility visibility-${escapeHtml(moderation.visibility)}">${escapeHtml(moderation.visibility)}</span>${metadata.unlisted ? `<br><span class="small">unlisted</span>` : ""}${forms.visibility}</td>
+	<td>${item.sharing.escalated ? `<strong class="flag pending">Traffic review</strong><p class="small">${escapeHtml(item.sharing.escalated)}</p>` : ''}${item.automoderation?.requires_review ? `<strong class="flag pending">AI / media review</strong>` : ''}${reportsCell(item)}<p class="small">${item.sharing.recipients}/3 recipients · ${item.sharing.requests} body requests</p></td>
+	<td><span class="visibility visibility-${escapeHtml(moderation.visibility)}">${moderation.visibility === 'visible' ? moderation.decision === 'approved' ? 'Public access' : item.sharing.escalated ? 'Uploader only' : 'Limited sharing' : escapeHtml(moderation.visibility)}</span>${metadata.unlisted ? `<br><span class="small">unlisted</span>` : ""}${forms.visibility}</td>
 	<td>${decision}${forms.approve}</td>
 	<td>${item.automoderation ? `<span class="flag${item.automoderation.requires_review ? " pending" : ""}">Jev: ${escapeHtml(item.automoderation.category ?? item.automoderation.status)}</span>${item.automoderation.probabilities && item.automoderation.category ? `<br><span class="small">${Math.round(item.automoderation.probabilities[item.automoderation.category] * 100)}% model score</span>` : ""}${item.automoderation.detail ? `<br><span class="small">${escapeHtml(item.automoderation.detail)}</span>` : ""}` : ""}${forms.classification}</td>
 	<td>${moderation.moderated_by ? `<strong>${escapeHtml(moderation.moderated_by)}</strong><br><span class="small">${escapeHtml(moderation.moderated_at ?? "")}</span>` : `<span class="muted">never</span>`}</td>
@@ -380,7 +345,7 @@ function reviewQuery(options: ReviewListOptions, offset: number): string {
 
 function reviewFilters(options: ReviewListOptions): string {
 	return `<form class="review-filters card" id="review-filters" method="get" action="/admin/pastes">
-<label>Reports<select name="reports">${paste.REVIEW_REPORT_FILTERS.map((value) => `<option value="${value}"${selected(options.reports, value)}>${value === "pending" ? "Pending review" : value === "reported" ? "All reported" : value === "unreported" ? "Never reported" : "All pastes"}</option>`).join("")}</select></label>
+<label>Queue<select name="reports">${paste.REVIEW_REPORT_FILTERS.map((value) => `<option value="${value}"${selected(options.reports, value)}>${value === "pending" ? "Pending review" : value === "reported" ? "All reported" : value === "unreported" ? "Never reported" : "All pastes"}</option>`).join("")}</select></label>
 <label>Reporter reason<select name="reason"><option value="">All reasons</option>${paste.REPORT_CATEGORIES.map((reason) => `<option value="${escapeHtml(reason)}"${selected(options.reportReason, reason)}>${escapeHtml(reason)}</option>`).join("")}</select></label>
 <label>Decision<select name="decision"><option value="">All decisions</option>${paste.MODERATION_DECISIONS.map((decision) => `<option value="${decision}"${selected(options.decision, decision)}>${decision}</option>`).join("")}</select></label>
 <label>Visibility<select name="visibility"><option value="">All visibility</option>${paste.PASTE_VISIBILITIES.map((visibility) => `<option value="${visibility}"${selected(options.visibility, visibility)}>${visibility}</option>`).join("")}</select></label>
@@ -391,8 +356,8 @@ function reviewFilters(options: ReviewListOptions): string {
 </form>`;
 }
 
-function userTable(): string {
-	return STAFF_USERS.map((user) => `<tr><td class="mono">${escapeHtml(user.username)}</td><td>${escapeHtml(user.role)}</td></tr>`).join("");
+function userTable(env: Env): string {
+	return staffUsers(env).map((user) => `<tr><td class="mono">${escapeHtml(user.username)}</td><td>${escapeHtml(user.role)}</td></tr>`).join("");
 }
 
 function accessLogTable(items: paste.PasteAccessLogEntry[]): string {
@@ -407,17 +372,15 @@ const REVIEW_SCRIPT = `<script>
 (() => {
   const filters = document.getElementById("review-filters");
   if (filters instanceof HTMLFormElement) filters.addEventListener("change", () => filters.requestSubmit());
-  document.querySelectorAll(".classify-form select").forEach((select) => {
-    select.addEventListener("change", () => {
-      if (select instanceof HTMLSelectElement && select.value && select.form) select.form.requestSubmit();
-    });
-  });
+  document.querySelectorAll('.classify-form').forEach((form) => form.addEventListener('submit', (event) => {
+    if (!form.querySelector('select').value) { event.preventDefault(); alert('Choose a restriction reason first.'); }
+  }));
 })();
 </script>`;
 
 const ADMIN_STYLE = `
-#minimum-difficulty{max-width:12rem;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:.55rem .7rem}
-#minimum-difficulty:focus{outline:2px solid var(--focus);outline-offset:1px}
+#minimum-difficulty,#short-id-increment{max-width:12rem;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:.55rem .7rem}
+#minimum-difficulty:focus,#short-id-increment:focus{outline:2px solid var(--focus);outline-offset:1px}
 .staff-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:.75rem;margin-bottom:1rem}.staff-heading h1{margin:0;font-size:1.35rem}.identity,.muted,.small{color:var(--muted)}.small{font-size:.75rem}.mono,pre{font-family:var(--mono)}.strong{font-weight:700}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:.7rem .65rem;border-top:1px solid var(--border);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}.review-table td{min-width:8rem}.review-table th:nth-child(3),.review-table th:nth-child(4),.review-table td:nth-child(3),.review-table td:nth-child(4){text-align:center}.review-table td:nth-child(5){min-width:10rem}.pending-row{background:color-mix(in srgb,var(--danger) 7%,transparent)}.flag{display:inline-block;font-size:.75rem;font-weight:650}.flag.pending{color:var(--danger)}.report-list{max-width:24rem;margin:.4rem 0;padding-left:1.2rem}.report-list li+li{margin-top:.5rem}.cell-action,.classification-action{margin:.45rem 0 0}.cell-action button,.classification-action select{width:100%;min-height:2.25rem;padding:.35rem .55rem;font:inherit}.cell-action .secondary{color:var(--fg);background:var(--surface);border-color:var(--border)}.visibility{font-weight:650}.visibility-hidden,.visibility-deleted{color:var(--danger)}.review-filters{display:grid;grid-template-columns:repeat(7,minmax(8rem,1fr));gap:.7rem;align-items:end}.review-filters label{margin:0}.review-filters select{display:block;width:100%;margin-top:.25rem}.pager{display:flex;justify-content:flex-end;align-items:center;gap:.75rem;margin-top:1rem}.button{padding:.5rem .8rem;border:1px solid var(--border);border-radius:6px;text-decoration:none}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}details summary{cursor:pointer;color:var(--accent)}pre{max-height:28rem;overflow:auto;padding:1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:.75rem;white-space:pre-wrap;overflow-wrap:anywhere}.referer{max-width:32rem;overflow-wrap:anywhere}@media(max-width:1100px){.review-filters{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:700px){.review-filters{grid-template-columns:1fr 1fr}.card{padding:.8rem}}
 `.trim();
 
@@ -451,10 +414,11 @@ function powSettingsPage(user: StaffUser, state: PowDifficultyState): Response {
 <dt>Minimum difficulty</dt><dd>${state.minimum_difficulty_bits} leading zero bits</dd>
 <dt>Current difficulty for a base-size paste</dt><dd>${state.current_difficulty_bits} leading zero bits</dd>
 <dt>Traffic adjustment</dt><dd>+${state.rate_extra_bits} bits · ${state.recent_paste_count} pastes in the last ${state.rate_window_seconds / 60} minutes</dd>
+<dt>Short ID increment</dt><dd>${state.short_id_increment} bits per version-0 ID consumed in the requester's current regional five-minute tick</dd>
 <dt>Deployment default</dt><dd>${state.configured_default_bits} bits · ${state.override_difficulty_bits === null ? "using deployment default" : "admin override active"}</dd>
 ${state.updated_at ? `<dt>Last changed</dt><dd>${escapeHtml(state.updated_at)} by ${escapeHtml(state.updated_by)}</dd>` : ""}
 </dl>
-<p>The current difficulty applies to pastes up to ${paste.DEFAULT_PASTE_BYTES.toLocaleString("en-US")} bytes. Each additional started ${paste.PASTE_DIFFICULTY_STEP_BYTES.toLocaleString("en-US")}-byte block adds one bit, capped at ${MAX_POW_DIFFICULTY_BITS} bits.</p>
+<p>The current difficulty applies to pastes up to ${paste.DEFAULT_PASTE_BYTES.toLocaleString("en-US")} bytes. Expected work scales with the estimated cost of each upload, rounded up to a power of two. The uncompressed container is limited to 8 MiB. Per-IP and global cost budgets apply even with a zero-bit minimum.</p>
 <p><a href="/admin/pow">Refresh current difficulty</a></p>
 </section>
 <section class="card"><h2>Set minimum difficulty</h2>
@@ -462,11 +426,13 @@ ${disabled ? `<p>Only admins can change this setting.</p>` : ""}
 <form method="post" action="/admin/pow">
 <label for="minimum-difficulty">Minimum leading zero bits (0–${MAX_POW_DIFFICULTY_BITS})</label>
 <input id="minimum-difficulty" name="minimum_difficulty_bits" type="number" min="0" max="${MAX_POW_DIFFICULTY_BITS}" step="1" value="${state.minimum_difficulty_bits}" required${disabled} />
-<p><button type="submit"${disabled}>Save minimum difficulty</button></p>
+<label for="short-id-increment">Version-0 regional ID increment</label>
+<input id="short-id-increment" name="short_id_increment" type="number" min="0" max="64" step="0.1" value="${state.short_id_increment}" required${disabled} />
+<p><button type="submit"${disabled}>Save difficulty settings</button></p>
 </form>
 <form method="post" action="/admin/pow"><input type="hidden" name="action" value="reset" /><button type="submit"${disabled}>Use deployment default (${state.configured_default_bits} bits)</button></form>
 <p>Each extra bit doubles expected work. Zero bits disables the minimum work requirement; very high values effectively prevent uploads.</p>
-<p>Changes persist across restarts and apply to newly issued challenges. Existing signed challenges remain valid until they expire. Traffic and size adjustments still apply.</p>
+<p>Changes persist across restarts and apply to newly issued challenges. Existing challenges are authenticated until they expire, but a higher current price requires a fresh proof at redemption. Traffic and size adjustments still apply.</p>
 </section>`);
 }
 
@@ -477,16 +443,20 @@ async function handlePowSettings(request: Request, env: Env, user: StaffUser, ap
 		if (user.role !== "admin") return badRequest("admin role required", api, 403);
 		if (!hasValidMutationOrigin(request)) return badRequest("invalid request origin", api, 403);
 		let value: unknown;
+		let increment: unknown = 1;
 		try {
 			if (api) {
 				const body: unknown = await request.json();
 				if (typeof body !== "object" || body === null || Array.isArray(body)) return badRequest("body must be an object");
 				value = (body as Record<string, unknown>).minimum_difficulty_bits;
+				increment = (body as Record<string, unknown>).short_id_increment ?? 1;
 			} else {
 				const form = await request.formData();
 				const raw = form.get("minimum_difficulty_bits");
+				const rawIncrement = form.get('short_id_increment');
 				value = form.get("action") === "reset" ? null
 					: typeof raw === "string" && /^[0-9]+$/.test(raw) ? Number(raw) : undefined;
+				increment = form.get('action') === 'reset' || rawIncrement == null ? 1 : Number(rawIncrement);
 			}
 		} catch {
 			return badRequest("invalid request body", api);
@@ -494,7 +464,10 @@ async function handlePowSettings(request: Request, env: Env, user: StaffUser, ap
 		if (value !== null && !isDifficultyBits(value)) {
 			return badRequest(`minimum_difficulty_bits must be an integer from 0 to ${MAX_POW_DIFFICULTY_BITS}, or null to use the deployment default`, api);
 		}
-		await powKeyStub(env).setDifficultySettings(value, user.username);
+		if (typeof increment !== 'number' || !Number.isFinite(increment) || increment < 0 || increment > 64) {
+			return badRequest('short_id_increment must be a number from 0 to 64', api);
+		}
+		await powKeyStub(env).setDifficultySettings(value, user.username, increment);
 		if (!api) return new Response(null, { status: 303, headers: { location: "/admin/pow", "cache-control": "no-store" } });
 	}
 	const state = await getPowDifficultyState(env);
@@ -502,8 +475,8 @@ async function handlePowSettings(request: Request, env: Env, user: StaffUser, ap
 		: powSettingsPage(user, state);
 }
 
-function usersPage(user: StaffUser): Response {
-	return staffPage(user, "/admin/users", "Staff users", `<section class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th></tr></thead><tbody>${userTable()}</tbody></table></div></section>`);
+function usersPage(user: StaffUser, env: Env): Response {
+	return staffPage(user, "/admin/users", "Staff users", `<section class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th></tr></thead><tbody>${userTable(env)}</tbody></table></div></section>`);
 }
 
 function accessLogPage(user: StaffUser, accessLog: paste.PasteAccessLogPage, limit: number): Response {
@@ -645,6 +618,7 @@ async function handleStaffPasteContent(request: Request, env: Env, id: string, m
 		return response;
 	}
 	const raw = mode === "raw";
+	if (raw && stored.format === 'bundle-v1') return bundleFileResponse(request, object, stored, stored.primary ?? '', hitCount);
 	const headers = staffHeaders(raw ? rawContentType(stored.content_type)
 		: stored.content_encoding === "gzip" ? "application/gzip" : "text/plain; charset=utf-8");
 	headers.set("content-length", String(raw ? stored.byte_length : stored.compressed_byte_length));
@@ -684,7 +658,7 @@ export async function handleAdminRequest(request: Request, env: Env, url: URL, p
 	if (request.method !== "GET" && request.method !== "HEAD") return methodNotAllowed(api);
 
 	if (path === "/admin/reports") return Response.redirect(new URL("/admin/pastes?reports=reported", request.url).toString(), 302);
-	if (path === "/admin/users") return usersPage(user);
+	if (path === "/admin/users") return usersPage(user, env);
 	if (path === "/admin/access-log") {
 		const options = parseAccessLogOptions(url, true);
 		if (options instanceof Response) return options;
@@ -697,7 +671,7 @@ export async function handleAdminRequest(request: Request, env: Env, url: URL, p
 		return reviewPage(user, page, options, `${url.pathname}${url.search}`);
 	}
 	if (path === "/api/admin/users") {
-		return new Response(JSON.stringify({ authenticated_user: user, users: STAFF_USERS }), { headers: staffHeaders("application/json; charset=utf-8") });
+		return new Response(JSON.stringify({ authenticated_user: user, users: staffUsers(env) }), { headers: staffHeaders("application/json; charset=utf-8") });
 	}
 	if (path === "/api/admin/reports") {
 		const options = parseListOptions(url);
@@ -722,7 +696,7 @@ export async function handleAdminRequest(request: Request, env: Env, url: URL, p
 	]);
 	return new Response(JSON.stringify({
 		authenticated_user: user,
-		users: STAFF_USERS,
+		users: staffUsers(env),
 		pastes: page.items,
 		access_log: accessLog.items,
 		reports,

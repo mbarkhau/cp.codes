@@ -23,7 +23,8 @@ MEDIA_FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "media.json").
 class PasteTests(unittest.TestCase):
     def challenge(self, content=b"hello", difficulty=8):
         return {
-            "version": 1,
+            "version": 2,
+            "requester_hash": 'ef' * 32,
             "challenge_id": "ab" * 16,
             "nonce": "cd" * 16,
             "difficulty": difficulty,
@@ -63,6 +64,7 @@ class PasteTests(unittest.TestCase):
             {"algorithm": "other"}, {"signature": ""}, {"difficulty": -1},
             {"difficulty": 257}, {"difficulty": True}, {"content_hash": "0" * 64},
             {"byte_length": 1}, {"nonce": "bad"}, {"expires_at": None},
+            {'version': 3}, {'version': True}, {'requester_hash': 'bad'},
         ):
             challenge = {**self.challenge(content), **changes}
             with self.subTest(changes=changes), self.assertRaises(RuntimeError):
@@ -100,7 +102,7 @@ class PasteTests(unittest.TestCase):
                     test.assertIs(body["consent_moderation"], True)
                     test.assertIs(body["unlisted"], True)
                     test.assertEqual(body["content_type"], expected_type)
-                    test.assertEqual(body["description"], "test paste")
+                    test.assertNotIn("description", body)
                     test.assertEqual(body["filename"], filename)
                     challenge = body["challenge"]
                     digest = hashlib.sha256(
@@ -130,7 +132,6 @@ class PasteTests(unittest.TestCase):
                 path = Path(directory) / filename
                 path.write_bytes(input_content)
                 argv = ["-" if stdin else str(path), "--consent-all", "--unlisted", "--json",
-                        "--description", "test paste",
                         "--base-url", f"http://127.0.0.1:{server.server_port}"]
                 if content_type:
                     argv.extend(["--content-type", content_type])

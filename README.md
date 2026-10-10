@@ -4,10 +4,10 @@ A basic public pastebin / document store. Pastes are identified by short **CP-Co
 (e.g. `CP0A1B2C`). No accounts — uploads are gated by a **SHA-256** proof of
 work instead.
 
-- New uploads undergo automated moderation; visible content is public unless moderation hides or deletes it
+- AI-cleared innocuous text is available to its uploader and three other IPs; wider traffic requires human review
 - No registration or email required to publish (reporters may optionally provide a contact email)
-- Documents may persist indefinitely; large/old documents may be purged if cost demands it
-- UTF-8 text plus PNG/JPEG/WebP/GIF images and MP3/MP4 media encoded as base64 data URLs, with uncompressed paste size priced into the proof-of-work difficulty
+- Public distribution/listing requires human approval; unlisted is the browser default
+- Up to 16 named files per paste, 8 MiB inflated total; Markdown supports sibling images and links
 - Browser-side gzip compression, decompression, content detection, Markdown/image rendering, and URL handling
 - Every upload burns a single-use SHA-256 PoW challenge (base: 65,536 attempts on average; ~45,426 for a 50% chance)
 - The verified proof and submitting request metadata are retained with each paste; proof details are public, while public responses never expose request metadata
@@ -15,12 +15,15 @@ work instead.
 https://cp.codes is **not** a free-speech platform. Operators delete content they don't
 want. Access logs may be provided to law enforcement; content is removed on legal request.
 
-Use cases: URL notes, pastebin, public notices.
+Use cases: transferring small files between computers, sharing notes/code/documents with a few people, and human-approved public notices.
+
+**Redesign policy/API/deployment details:** [doc/REDESIGN.md](doc/REDESIGN.md). In particular, Jev cannot inspect media: media is supported but requires human review. Cost coefficients are estimates; production needs a matching R2 retention policy and real staff credentials.
 
 ## Local development
 
 ```bash
 npm install
+cp .dev.vars.example .dev.vars # set DEFAPI_KEY; development staff fixtures are opt-in
 make dev          # wrangler dev → http://localhost:8787
 ```
 
@@ -29,22 +32,25 @@ Optional PoW tuning (also settable in `wrangler.jsonc` `vars`):
 |        Variable       | Default |                        Meaning                        |
 |-----------------------|---------|-------------------------------------------------------|
 | `POW_DIFFICULTY_BITS` | `16`    | Base leading zero bits required on the SHA-256 digest |
+| `STAFF_ALLOW_DEVELOPMENT_LOGIN` | `false` | Enable known fixture accounts for local development only |
+| `DEFAPI_KEY` | secret | DefAPI moderation credential |
+| `STAFF_CREDENTIALS` | secret | Salted production staff-password hashes |
 
 Each search iteration computes one SHA-256 digest. Success probability per attempt
 is `2^-difficulty`; at the base difficulty, work is 65,536 attempts on average
-and ~45,426 attempts for a 50% chance. Difficulty increases with paste volume in a
-rolling 10-minute window: the 15th recent paste adds one bit, the 16th adds two,
-and so on. Paste size also raises difficulty: the first 10 KiB uses the
-rate-adjusted difficulty, and each additional started 100 KiB block adds one bit.
-There is no application-level size cap; difficulty saturates at SHA-256's
-mathematical maximum of 256 leading zero bits. The browser splits non-overlapping nonce
+and ~45,426 attempts for a 50% chance. Expected work scales with estimated upload
+cost (rounded up to a power of two), plus logarithmic global/per-IP congestion
+adjustments. Eight-character CP-Codes also add a configurable increment, defaulting to one bit, for each short ID already consumed by the requester's region in its current five-minute tick. That pressure continues after the 16-ID counter rolls into the next timestamp. Hard limits bound bytes, challenge issuance, and admitted cost.
+Redemption atomically checks the current price and reserves the budget before
+inflation or paid moderation; cheaply prefetched proofs cannot bypass it.
+See the formula, assumptions and limits in [doc/REDESIGN.md](doc/REDESIGN.md). The browser splits non-overlapping nonce
 ranges across a Web Worker pool sized from the available logical CPU cores (up to
 16 workers). Each worker uses native Web Crypto when available and lazily loads a
 WebAssembly SHA-256 fallback otherwise. The server uses its native Web Crypto implementation and verifies a proof with
 one digest. Challenges are authenticated but not persisted: a Durable Object
 generates and stores one HMAC key, and each Worker isolate retrieves and caches
-that immutable key. Only successful challenge redemptions are recorded to
-prevent proof replay.
+that immutable key. Issuance counters, single-use redemptions and cost admissions
+are durable; failed admitted attempts still consume budget.
 
 During proof search, the browser shows elapsed time and a live 50% proof-time
 estimate based on the combined workers' reported attempt rate. Actual and median
@@ -67,7 +73,7 @@ text or binary file (or stdin), encodes binary content as a base64 data URL,
 hashes and gzips the resulting UTF-8 body, requests a signed challenge, solves
 the SHA-256 proof, and uploads the paste. Required flag
 `--consent-all` explicitly agrees to the service collecting and retaining your
-IP/location metadata and sending paste text, description, and filename to
+IP/location metadata and sending paste text and filename to
 DefAPI/TypeSafe for automated moderation.
 
 ```bash
@@ -88,8 +94,8 @@ cat archive.zip | python3 scripts/paste.py --consent-all --binary --filename arc
 The default output is the paste URL on stdout; progress, the 10-minute deletion
 token, and moderation warnings go to stderr. `--json` returns the full API response
 (including the deletion token) on stdout. Keep that response private. Unlisted
-pastes are still public to anyone with the URL, and uploads may be hidden pending
-moderation review.
+pastes stay outside the feed, but are not secret storage. AI-cleared text has a limited
+IP audience; unsupported or uncertain content is held for human review.
 
 Text content defaults to `plaintext`; use `--content-type` for Markdown, code,
 URLs, or already encoded media data URLs. Raw PNG/JPEG/WebP/GIF, MP3, and MP4 files
@@ -109,7 +115,7 @@ and proof-of-work costs use the encoded body; base64 adds roughly one-third to
 the original size. UTF-8 text is preserved byte-for-byte.
 
 The input file's basename becomes the public filename; `--filename` overrides
-it (use `--filename ''` to omit it). `--description` adds a public description.
+it (use `--filename ''` to omit it).
 HTTP requests time out after 60 seconds and proof searches after 120 seconds per
 challenge; override with `--timeout` and `--pow-timeout`. An expired/rejected proof
 is retried once with a fresh challenge; ambiguous network failures are not retried.
@@ -132,7 +138,8 @@ Returns:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "requester_hash": "<issuer IP digest>",
   "challenge_id": "…",
   "nonce": "<random hex>",
   "difficulty": 16,
@@ -153,13 +160,13 @@ Returns:
   "content_gzip": "H4sIAAAAA…",
   "compression": "gzip",
   "content_type": "plaintext",
-  "description": "optional description",
   "filename": "hello.txt",
   "unlisted": false,
   "consent": true,
   "consent_moderation": true,
   "challenge": {
-    "version": 1,
+    "version": 2,
+    "requester_hash": "…",
     "challenge_id": "…",
     "nonce": "…",
     "difficulty": 16,
@@ -186,8 +193,8 @@ used to verify the UTF-8 content length and SHA-256 hash and to create the recen
 preview. After verification, Jev assesses the text and public descriptive metadata before
 the original gzip bytes are published to R2. The initial visibility and machine
 assessment are persisted first, so flagged content is never briefly exposed while
-classification runs. The challenge is recorded only
-after a valid proof, making it single-use without persisting unproven challenge requests. If the server rejects
+classification runs. The challenge is redeemed after a valid proof and current-price check, before
+inflation and moderation; unsuccessful admitted payloads still consume cost budget. If the server rejects
 a proof as invalid, expired, or already used, the browser requests one fresh
 challenge and solves it again before reporting an error. A successful response
 also includes a random `deletion_token` and `deletion_expires_at` timestamp. The
@@ -196,8 +203,7 @@ by the read API and expires after 10 minutes.
 
 `content_type` must be the client's resolved type: `plaintext`, `url`, `markdown`,
 `png`, `jpeg`, `webp`, `gif`, `mp3`, `mp4`, `javascript`, `typescript`, `python`, `java`, `json`, `html`, `css`, `shell`, `sql`,
-`yaml`, `xml`, `c`, `cpp`, `csharp`, `go`, `rust`, `ruby`, or `php`. `description`
-and `filename` are optional, and `unlisted` defaults to `false`. Both `consent`
+`yaml`, `xml`, `c`, `cpp`, `csharp`, `go`, `rust`, `ruby`, or `php`. `filename` is optional, and `unlisted` defaults to `false`. Both `consent`
 (collection/storage of IP and location) and `consent_moderation` (automated
 processing with DefAPI/TypeSafe) must be `true`; missing, false, or non-boolean
 consents are rejected with HTTP 403. The browser's auto mode uses the filename extension when supplied and
@@ -210,17 +216,20 @@ URL pastes are implemented in the browser. Once staff approve a URL paste, the
 server validates its HTTP(S) target and serves its canonical CP-Code as a temporary
 redirect.
 
-Listed pastes use short version 0 CP-Codes and appear in recent uploads. Unlisted
-pastes use longer version 2 CP-Codes and are omitted from recent uploads (but remain
-public to anyone who knows the URL).
+Listed pastes use short version 0 CP-Codes and appear in recent uploads **after human
+approval**. Unlisted pastes use longer version 2 CP-Codes and stay outside the feed.
+Both use the same limited-sharing/moderation gates. Unlisted is not access authentication.
+
+For multi-file pastes, use the [`bundle-v1` container API](doc/REDESIGN.md#multi-file-api).
+The composer provides named files, main-document selection, safe previews and sibling references.
 
 Each successful upload privately retains `cf-connecting-ip`, `x-real-ip`, and
 `cf-ipcountry`, plus Cloudflare's `asn`, `asOrganization`, `country`,
 `isEUCountry`, `city`, `continent`, `region`, `regionCode`, `timezone`,
 `longitude`, `latitude`, and `postalCode` request properties. Missing properties
-are stored as empty values and read back as null. These fields use
-`upload_`-prefixed R2 custom metadata keys and are not included in public paste,
-recent-upload, or creation responses. `GET /client-info` displays the values that
+are stored as null. Full metadata is retained in SQLite, not duplicated into R2's
+size-limited custom metadata, and is excluded from public paste, recent-upload and
+creation responses. Only the trusted edge IP is used for access admission. `GET /client-info` displays the values that
 would be retained for the current request.
 
 ### `DELETE /api/paste/:id`
@@ -278,16 +287,17 @@ there are no automatic retries or background jobs.
 
 |                                   Result                                  |                       Initial moderation                      |
 |---------------------------------------------------------------------------|---------------------------------------------------------------|
-| `spam`, `phishing`, or `csam`                                             | `restricted` + `hidden`, using the corresponding staff reason |
-| `code`, `plaintext`, or `ascii` with selected-category probability ≥ 0.90 | `unreviewed` + `visible`                                      |
-| Lower-scoring benign result, API error/missing key, or invalid response   | `unreviewed` + `hidden`, pending staff review                 |
+| `spam`, `phishing`, `csam`, or `unsafe` | `restricted` + `hidden`, using a corresponding reason |
+| Benign category, aggregate harmful score ≤ 0.01, current prompt | `unreviewed` + `visible`, **limited sharing only** |
+| Higher harmful score, API error/missing key, or invalid response | `unreviewed` + `hidden`, pending staff review |
 | Image or body over the 248,000-byte single-request cap                    | `unreviewed` + `hidden`, pending staff review                 |
 
-This six-category assessment is not a certification of legality. Model scores are
+This seven-category assessment is not a certification of legality. Model scores are
 not calibrated probabilities. URL **text** is assessed, not its destination; Jev
 never marks a paste staff-approved or enables an automatic URL redirect. Image
 moderation is unsupported by the documented API. Oversized bodies are retained
-intact, not truncated or chunked. Staff can approve/show/classify/delete held pastes.
+intact, not truncated or chunked. Staff can inspect, approve, restrict/hide or delete held pastes. Wider audiences
+and exceeded traffic budgets also create review tasks without synthetic user reports.
 
 The new `paste_automoderation` SQLite table retains the assessment JSON (model,
 prompt version, timestamp, category, all probabilities, confidence, usage, billing,
@@ -301,7 +311,8 @@ Assessments are exposed only in authenticated staff responses/pages.
 `POST /api/paste` adds a `moderation` object with `visibility`, `requires_review`,
 and `assessment_status`. For held uploads the browser stays on the upload form and
 shows the assigned ID and review notice instead of navigating to an unavailable
-paste. Existing pastes are not automatically reclassified; the CLI remains read-only.
+paste. Old prompt assessments no longer grant limited sharing and reopen the review queue;
+existing human approval remains valid. The CLI remains read-only.
 
 **Worker key setup:** the CLI shell's `DEFAPI_KEY` is not automatically a Worker
 binding. Copy `.dev.vars.example` to `.dev.vars`, set `DEFAPI_KEY` there, and restart
@@ -313,7 +324,7 @@ npx wrangler secret put DEFAPI_KEY
 
 `wrangler.jsonc` declares the required secret name, not its value. If it is missing
 at runtime, new uploads remain hidden for staff review. Local uploads also call the
-real, paid DefAPI service. Only text, description, filename, and content type are
+real, paid DefAPI service. Only text, filename, and content type are
 sent; private IP/location/upload audit metadata and PoW are not sent. The upload
 separate moderation consent notice discloses this third-party processing.
 
@@ -332,9 +343,9 @@ follow-up content fetch is not logged twice. Initial HTML and JSON metadata requ
 metadata and a loading shell but no paste body. Browser JavaScript fetches the gzip
 object, decompresses it, verifies its uncompressed length and SHA-256 hash, and then
 renders plaintext/code, Markdown, PNG/JPEG/WebP/GIF images, MP3/MP4 players, or the URL warning for a URL
-that has not been approved. Verified content and its rendered QR PNG share an entry in a local-storage cache containing
-at most 10 pastes. Revisiting a cached paste renders without fetching the content
-endpoint or incrementing the hit count. JSON metadata exposes `content_url`,
+that has not been approved. The viewer switches bundle files locally after a single
+verified download. Content is always re-fetched/reauthorized on a new visit; only
+QR images remain cached. This prevents stale content-cache authorization bypasses. JSON metadata exposes `content_url`,
 `content_encoding`, and both compressed and
 uncompressed lengths instead of embedding the plaintext content.
 
@@ -343,14 +354,15 @@ uncompressed lengths instead of embedding the plaintext content.
 | `GET /`                                                | New-paste UI                                                                                        |
 | `GET /about`                                           | Service information                                                                                 |
 | `GET /client-info`                                     | IP, network, and location values retained with an upload                                            |
-| `GET /pastes`                                          | Recent public uploads                                                                               |
+| `GET /pastes?page=1`                                   | Public approved/listed archive, newest first, 50 pastes per page with Previous/Next navigation |
 | `GET /new`                                             | New-paste UI                                                                                        |
 | `GET/POST /login`                                      | Staff login form / create a browser session                                                          |
 | `POST /logout`                                        | Revoke the current browser session and clear its cookie                                              |
 | `GET /CP………`                                           | `302` redirect for approved URL pastes; otherwise HTML view (browsers) or decompressed raw response |
 | `GET /CP……….<ext>`                                     | Decompressed raw response at its type-specific extension                                            |
 | `GET /api/paste/CP………`                                 | JSON metadata                                                                                       |
-| `GET /api/paste/CP………/content`                         | Exact stored gzip bytes for client-side decompression                                               |
+| `GET /api/paste/CP………/content`                         | Exact stored gzip bytes (single file or bundle container) |
+| `GET /CP………/files/:name[?download]` | Decoded bundle file under the same access gate |
 | `GET /api/pastes?limit=40`                             | Recent uploads (newest first, preview, hit count, and PoW difficulty)                               |
 | `DELETE /api/paste/CP………`                              | Delete using the creator's short-lived token while retaining metadata                               |
 | `POST /api/paste/CP………/report`                         | Report suspected illegal content with an optional category and email                                |
@@ -398,10 +410,12 @@ CLI/API requests; unauthenticated CLI calls receive a `401` Basic challenge on
 A valid session takes precedence over any Basic header. Log out revokes cookies,
 not independently supplied Basic credentials.
 
-The existing bootstrap accounts remain `admin` / `4dm1n` with role `admin`, and
-`moderator` / `hunter2` with role `mod`. **Replace these hardcoded credentials with
-a managed identity provider or properly stored password hashes before production
-use.** Both roles can inspect every listed and unlisted paste, private upload
+Development fixtures (`admin` / `4dm1n`, `moderator` / `hunter2`) require an explicit
+`STAFF_ALLOW_DEVELOPMENT_LOGIN=true` override. The deployed default is **false**.
+Production requires the `STAFF_CREDENTIALS` secret with salted PBKDF2 hashes;
+[generate/provision credentials](doc/REDESIGN.md#staff-credentials--deployment) using
+`scripts/staff_credentials.py`. Missing/malformed production credentials fail closed.
+Production Basic Auth also consumes login-attempt limits; use sessions for repeated review. Both roles can inspect every listed and unlisted paste, private upload
 metadata, proof-of-work and storage fields, hit counts, content links, reports,
 the access log, and staff users. Passwords and password hashes are never included
 in a response. Run session integration tests with `npm run test:session`.
@@ -414,8 +428,8 @@ cannot change the setting. The override is stored in the existing PoW Durable
 Object and persists across Worker restarts and deployments without a new binding
 or migration. Each extra bit doubles expected work; very high settings effectively
 prevent uploads. Paste-size and traffic adjustments still apply, capped at 256 bits.
-Changes affect newly issued challenges; existing signed challenges remain valid
-until expiry. Refresh the page to update the current traffic snapshot.
+Changes are checked at issuance and redemption; previously signed challenges
+remain authentic until expiry but require a fresh proof if the current price is higher. Refresh the page to update the current traffic snapshot.
 
 `GET /api/admin/pow` returns the same state. Admins may `PATCH` or `POST` a JSON
 body such as `{"minimum_difficulty_bits": 18}`; use `null` instead of a number to
@@ -427,10 +441,10 @@ Run the integration tests with `npm run test:pow-settings`.
 pending review and can filter all reported, never-reported, or all pastes, plus
 reporter reason, staff decision, visibility, and content type. Each row shows every
 reporter-supplied reason and the most recent moderator. **Approve** is one click and
-also makes the paste visible. Choosing a classification such as spam or CSAM submits
-immediately and also hides the paste (open the dropdown, choose the reason). The
-**Hide/Show** button changes visibility with one click without discarding the current
-classification. Paste links open an authenticated `/admin/paste/:id/view` viewer;
+also permits public access. Choosing a classification does not immediately mutate state:
+choose a reason and explicitly click **Restrict & hide**. Visibility controls preserve the
+classification and cannot bypass audience/traffic policy. Traffic review is identified
+separately from AI/media review and user reports; approval controls also appear in the viewer. Paste links open an authenticated `/admin/paste/:id/view` viewer;
 its raw and stored-content requests use the same staff session cookie. Staff can inspect hidden/restricted bodies without making
 them public or incrementing hit counts. Deleted bodies remain unavailable to everyone.
 URL pastes are displayed for review, never followed automatically.
@@ -444,8 +458,8 @@ body. HTML review pages default to 100 records; `limit` accepts 1–1000. Use
 **Previous** and **Next** to page through results. The access-log page similarly uses
 **Older events**, or the API's `next_before_id`, for pagination.
 
-Raw routes are the one read path where the server decompresses the stored object;
-they return plaintext directly (including the base64 data URL for an image paste).
+Raw/individual-file routes decompress the stored object. Legacy single-file media
+raw responses remain data-URL text; bundle media routes return decoded, MIME-checked bytes.
 The `/content` endpoint returns the exact stored representation so browser code can
 decompress and verify it itself.
 
@@ -479,25 +493,26 @@ npm run classify -- --base-url http://localhost:8787
 node scripts/classify-pastes.mjs > classifications.jsonl
 ```
 
-Tests use native `Deno.test` and Deno standard assertions, with Web Crypto and
-`CompressionStream` for fixtures. No Node/npm test runner is used:
+The full suite uses Miniflare/Workerd integration tests, browser-unit tests, Python
+CLI tests and Deno policy tests. Install npm dependencies and Python; Deno runs through `uvx`:
 
 ```bash
-make test                         # CLI + upload moderation policy tests
-make test-classify
-make test-moderation
-uvx deno test scripts/classify-pastes.test.mjs scripts/automoderation.test.mjs
+make test                         # all regression tests
+npm test                          # equivalent
+make test-classify                # Deno CLI tests only, no Node/npm needed
+make test-moderation              # Deno moderation policy tests only
 ```
 
-The tests use injected HTTP fixtures, require no API key or runtime permissions,
-and make no paid API calls.
+Tests use injected provider fixtures and make no paid API calls. Optional Chromium
+end-to-end coverage is available with `npm run test:browser`; see
+[doc/REDESIGN.md](doc/REDESIGN.md#verification) for setup.
 
 `scripts/classify-pastes.mjs` reads each paste's metadata and body, verifies its
 length and SHA-256, and calls `typesafe/jev-1.13` via DefAPI's Decisions API.
-One `choice` question selects **spam**, **phishing**, **csam**, **code**,
+One `choice` question selects **spam**, **phishing**, **csam**, **unsafe**, **code**,
 **plaintext**, or **ascii**. `ascii` means text art, not merely ASCII-encoded
 text; `plaintext` is the fallback. For overlapping categories, the prompt gives
-CSAM, phishing, and spam priority over format labels. The result includes all six
+CSAM, phishing, spam, and unsafe content priority over format labels. The result includes all seven
 probabilities, confidence, token usage, and billing fields. These are model
 estimates, not calibrated probabilities or certifications of safety.
 
@@ -507,7 +522,8 @@ JSONL, to avoid npm's script banner. A failed paste does not stop the batch, but
 any error makes the process exit nonzero. This is read-only: it does not change
 staff moderation state. Normal content reads increment paste hit counts.
 
-Only text is assessed. PNG/JPEG/WebP/GIF and MP3/MP4 pastes are explicitly skipped
+Only text is assessed. Text-only bundles are assessed together; any bundle with media
+or encoded binary is skipped as a whole. PNG/JPEG/WebP/GIF and MP3/MP4 pastes are explicitly skipped
 because the provided Jev API documentation does not establish image, audio, or video support. URL destinations
 are not fetched. Bodies larger than **248,000 bytes (~242 KiB)** are skipped rather
 than silently truncated. This default estimates Jev's listed 64,000-token context
@@ -522,8 +538,19 @@ before using this on sensitive content. See `doc/jev-1.13.txt` for the API refer
 
 ## Deploy
 
+**Provision real staff credentials and `DEFAPI_KEY`, review retention/WAF/billing
+controls, and use a Paid Workers plan for the configured 250 ms CPU limit.**
+The storage estimate assumes a 30-day R2 lifecycle; enabling expiration can also
+purge matching **existing** older bodies. See the
+[deployment checklist](doc/REDESIGN.md#staff-credentials--deployment).
+
 ```bash
+npm run cf-typegen
+npm run check
+npm test
+npx wrangler deploy --dry-run
+# Only after provisioning/review:
 make deploy
-# create the R2 bucket once if needed:
-# npx wrangler r2 bucket create cp-codes-pastes
 ```
+
+No deployment or remote lifecycle modification is performed by the redesign.

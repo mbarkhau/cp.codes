@@ -1,4 +1,4 @@
-.PHONY: help dev start deploy check typegen clear-db classify classify-paste test test-classify test-moderation
+.PHONY: help dev start deploy check typegen clear-db classify classify-paste test test-node test-python test-classify test-moderation
 
 # Read development pastes through the running Wrangler server by default.
 BASE_URL ?= http://localhost:8787
@@ -11,7 +11,7 @@ help:
 	@echo "  make start    - alias for dev"
 	@echo "  make deploy   - deploy to Cloudflare"
 	@echo "  make check    - typecheck with tsc"
-	@echo "  make test     - run CLI + upload moderation tests with uvx deno (no Node/npm)"
+	@echo "  make test     - run Worker/browser-unit/Python CLI/Deno moderation tests (no paid API calls)"
 	@echo "  make typegen  - regenerate worker types"
 	@echo "  make clear-db - clear all local Wrangler development data"
 	@echo "  make classify - classify the latest 20 local pastes with Jev (requires make dev + DEFAPI_KEY)"
@@ -27,7 +27,13 @@ deploy:
 check:
 	npm run check
 
-test: test-classify test-moderation
+test: test-node test-python test-classify test-moderation
+
+test-node:
+	npm run test:node
+
+test-python:
+	npm run test:python
 
 test-classify:
 	uvx deno test scripts/classify-pastes.test.mjs

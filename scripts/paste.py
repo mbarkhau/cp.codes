@@ -74,13 +74,15 @@ def post_json(base_url, path, payload, timeout):
 
 
 def validate_challenge(challenge, content_hash, byte_length):
-    if challenge.get("version") != 1 or challenge.get("algorithm") != "sha256":
+    if type(challenge.get("version")) is not int or challenge.get("version") not in (1, 2) or challenge.get("algorithm") != "sha256":
         raise RuntimeError("server returned an unsupported PoW challenge")
     if challenge.get("content_hash") != content_hash or challenge.get("byte_length") != byte_length:
         raise RuntimeError("challenge is not bound to the submitted content")
     for field in ("challenge_id", "nonce"):
         if not isinstance(challenge.get(field), str) or not re.fullmatch(r"[0-9a-f]{32}", challenge[field]):
             raise RuntimeError(f"invalid challenge {field}")
+    if challenge.get('version') == 2 and not re.fullmatch(r'[0-9a-f]{64}', str(challenge.get('requester_hash', ''))):
+        raise RuntimeError('invalid challenge requester_hash')
     difficulty = challenge.get("difficulty")
     if type(difficulty) is not int or not 0 <= difficulty <= 256:
         raise RuntimeError("invalid challenge difficulty")
@@ -193,12 +195,13 @@ def prepare_content(content, content_type="plaintext", force_binary=False):
 
 
 def publish(args, content):
+    if len(content) > 8 * 1024 * 1024:
+        raise ValueError('upload exceeds the 8 MiB limit (after binary encoding)')
     content_hash = hashlib.sha256(content).hexdigest()
     payload = {
         "content_gzip": base64.b64encode(gzip.compress(content, mtime=0)).decode("ascii"),
         "compression": "gzip",
         "content_type": args.content_type,
-        "description": args.description,
         "filename": args.filename,
         "unlisted": args.unlisted,
         "consent": args.consent_all,
@@ -236,10 +239,9 @@ def main(argv=None):
     parser.add_argument("--base-url", default="https://cp.codes", help="service origin (default: https://cp.codes)")
     parser.add_argument("--content-type", choices=CONTENT_TYPES, default="plaintext", help="resolved content type (default: plaintext; supported binary media detected automatically)")
     parser.add_argument("--binary", action="store_true", help="force base64 data-URL encoding, even for valid UTF-8 input")
-    parser.add_argument("--description", default="", help="optional public description")
     parser.add_argument("--filename", help="public filename (default: input file's basename)")
     parser.add_argument("--unlisted", action="store_true", help="omit from recent uploads; NOT private")
-    parser.add_argument("--consent-all", action="store_true", required=True, help="consent to collecting and storing your IP and location and sending paste text, description, and filename to DefAPI/TypeSafe for automated moderation")
+    parser.add_argument("--consent-all", action="store_true", required=True, help="consent to collecting and storing your IP and location and sending paste text and filename to DefAPI/TypeSafe for automated moderation")
     parser.add_argument("--json", action="store_true", help="print full API response, including the deletion token")
     parser.add_argument("--timeout", type=positive_seconds, default=60, help="HTTP timeout in seconds (default: 60)")
     parser.add_argument("--pow-timeout", type=positive_seconds, default=120, help="proof search timeout in seconds per challenge (default: 120)")
@@ -265,6 +267,8 @@ def main(argv=None):
                 print(f'Deletion token (valid for 10 minutes): {result["deletion_token"]}', file=sys.stderr)
         if result.get("moderation", {}).get("visibility") == "hidden":
             print("Stored, but hidden pending moderation review; the URL is not public yet.", file=sys.stderr)
+        elif result.get('moderation', {}).get('state') == 'limited':
+            print('Ready for uploader + three other IPs; wider sharing requires human review.', file=sys.stderr)
         return 0
     except (OSError, ValueError, RuntimeError, URLError) as exc:
         print(f"error: {exc}", file=sys.stderr)

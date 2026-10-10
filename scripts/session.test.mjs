@@ -15,7 +15,7 @@ const auth = (username = "admin", password = "4dm1n") => ({
 const fetch = (path, options = {}, instance = mf) => instance.dispatchFetch(`https://cp.codes${path}`, { redirect: "manual", ...options });
 const settings = (extra = {}) => convertV4MiniflareOptions({
 	modules: true, script, compatibilityDate: "2026-09-05",
-	bindings: { POW_DIFFICULTY_BITS: "7" },
+	bindings: { POW_DIFFICULTY_BITS: "7", STAFF_ALLOW_DEVELOPMENT_LOGIN: 'true' },
 	durableObjects: {
 		STAFF_SESSIONS: { className: "TestStaffSession", useSQLite: true },
 		POW_KEY: { className: "PowKey", useSQLite: true },
@@ -121,8 +121,7 @@ test("public pages show staff navigation only after successful authentication", 
 		assert.ok(!html.includes(cookie.split("=")[1]));
 		for (const headers of [{}, auth("admin", "wrong"), { cookie: "__Host-cp_session=" + "0".repeat(64) }]) {
 			const anonymous = await (await fetch(path, { headers })).text();
-			assert.doesNotMatch(anonymous, /href="\/admin\/pastes"/);
-			assert.match(anonymous, /href="\/login">staff login/);
+			assert.doesNotMatch(anonymous, /href="\/admin\/pastes"|href="\/login"/);
 		}
 	}
 });

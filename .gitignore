@@ -14,6 +14,7 @@ dist/
 .DS_Store
 
 # Env / secrets
+.staff-credentials.json
 .env
 .env.*
 !.env.example

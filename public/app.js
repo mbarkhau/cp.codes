@@ -5,9 +5,10 @@
  */
 import { contentTypeForFilename, detectContentType } from "./content_type.js?v=7";
 import { MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType } from "./media.js?v=1";
+import { createFileEditor } from './files.js?v=1';
+import { MAX_UPLOAD_BYTES, sizeDifficultyBits } from './policy.js';
 
 const contentEl = document.getElementById("content");
-const descriptionEl = document.getElementById("description");
 const filenameEl = document.getElementById("filename");
 const listedEl = document.getElementById("listed");
 const consentEl = document.getElementById("consent");
@@ -22,10 +23,8 @@ const detectedTypeEl = document.getElementById("detected-type");
 const fileInputEl = document.getElementById("file-input");
 const fileButtonEl = document.getElementById("file-button");
 
-// These mirror the server policy for immediate UI feedback. The signed
-// challenge returned by the server remains authoritative.
-const DEFAULT_BYTES = 10 * 1024;
-const DIFFICULTY_STEP_BYTES = 100 * 1024;
+// The shared cost policy gives immediate feedback; the signed challenge
+// and atomic server admission remain authoritative.
 const MAX_POW_SUBMISSION_ATTEMPTS = 2;
 const DELETION_STORAGE_PREFIX = "cp.codes.deletion.v1:";
 
@@ -84,16 +83,20 @@ function setStatus(text, kind = "") {
 }
 
 let isBusy = false;
+const fileListEl = document.getElementById('file-list');
+const fileEditor = typeof fileListEl?.replaceChildren === 'function' && typeof createFileEditor === 'function'
+	? createFileEditor({ content: contentEl, filename: filenameEl, type: contentTypeEl, list: fileListEl,
+		changed: (error) => { updateBytes(); if (error) setStatus(error, 'err'); } }) : null;
+function addLoadedFile(name, text, type) { fileEditor?.add(name, text, type); }
 
 function updatePublishState() {
-	publishBtn.disabled = isBusy || !consentEl.checked || !moderationConsentEl.checked;
+	publishBtn.disabled = isBusy || !consentEl.checked || !moderationConsentEl.checked || contentEl.value.length === 0;
 }
 
 function setBusy(busy) {
 	isBusy = busy;
 	updatePublishState();
 	contentEl.disabled = busy;
-	descriptionEl.disabled = busy;
 	filenameEl.disabled = busy;
 	listedEl.disabled = busy;
 	consentEl.disabled = busy;
@@ -101,6 +104,11 @@ function setBusy(busy) {
 	contentTypeEl.disabled = busy;
 	fileInputEl.disabled = busy;
 	fileButtonEl.disabled = busy;
+	if (fileListEl) fileListEl.inert = busy;
+	const addText = document.getElementById('add-text');
+	if (addText) addText.disabled = busy;
+	const cancel = document.getElementById('cancel-publish');
+	if (cancel) cancel.hidden = !busy;
 	progressEl.style.display = busy ? "block" : "none";
 	progressEl.setAttribute("aria-hidden", busy ? "false" : "true");
 }
@@ -122,15 +130,14 @@ function updateDetection() {
 }
 
 function updateBytes() {
-	const n = new TextEncoder().encode(contentEl.value).byteLength;
-	const extraDifficultyBits = Math.ceil(
-		Math.max(0, n - DEFAULT_BYTES) / DIFFICULTY_STEP_BYTES,
-	);
+	const n = new TextEncoder().encode(fileEditor ? JSON.stringify(fileEditor.getBundle()) : contentEl.value).byteLength;
+	const extraDifficultyBits = typeof sizeDifficultyBits === 'function' && n > 0 && n <= MAX_UPLOAD_BYTES ? sizeDifficultyBits(n) : 0;
 	bytesEl.textContent = `${n.toLocaleString()} bytes`;
 	sizeDifficultyEl.textContent = extraDifficultyBits === 0
-		? "Base-size PoW"
-		: `Size PoW +${extraDifficultyBits} ${extraDifficultyBits === 1 ? "bit" : "bits"}`;
+		? 'Small upload · base work'
+		: `Estimated cost · ${2 ** extraDifficultyBits}× base work`;
 	updateDetection();
+	updatePublishState();
 	return n;
 }
 
@@ -158,38 +165,10 @@ async function verifyDecodableImage(dataUrl) {
 	}
 }
 
-const TEXT_FILE_EXTENSIONS = new Set([
-	"txt", "text", "url", "md", "markdown",
-	"js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx",
-	"py", "java", "json", "jsonl", "html", "htm", "css",
-	"sh", "bash", "zsh", "fish", "sql", "yaml", "yml", "xml",
-	"c", "h", "cpp", "cc", "cxx", "hh", "hpp", "hxx", "cs",
-	"go", "rs", "rb", "php",
-]);
-const TEXT_APPLICATION_TYPES = new Set([
-	"application/json",
-	"application/ld+json",
-	"application/sql",
-	"application/xml",
-	"application/yaml",
-	"application/x-httpd-php",
-	"application/x-javascript",
-	"application/x-sh",
-]);
-
-function isTextFile(file) {
-	const mediaType = file.type.toLowerCase().split(";", 1)[0];
-	const dot = file.name.lastIndexOf(".");
-	const extension = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : "";
-	return mediaType.startsWith("text/") ||
-		TEXT_APPLICATION_TYPES.has(mediaType) ||
-		TEXT_FILE_EXTENSIONS.has(extension) ||
-		mediaType === "";
-}
-
 async function loadFile(file) {
 	const hintedMediaType = mediaTypeHint(file);
 	setStatus(`Reading “${file.name}”…`);
+	if (typeof MAX_UPLOAD_BYTES === 'number' && file.size > MAX_UPLOAD_BYTES) { setStatus('File exceeds the 8 MiB upload limit.', 'err'); return; }
 	let bytes;
 	try {
 		bytes = new Uint8Array(await file.arrayBuffer());
@@ -215,24 +194,29 @@ async function loadFile(file) {
 			}
 		}
 	} else {
-		if (hintedMediaType || !isTextFile(file)) {
+		if (hintedMediaType) {
 			setStatus(`File “${file.name}” is not supported. Use UTF-8 text, PNG, JPEG, WebP, GIF, MP3, or MP4.`, "err");
 			return;
 		}
 		try {
-			text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+			text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
 		} catch {
 			setStatus(`File “${file.name}” is not valid UTF-8 text.`, "err");
 			return;
 		}
-		if (text.includes("\0")) {
+		if (text.includes("\0") || bytes.subarray(0, 4096).reduce((count, byte) => count + Number(byte < 0x20 && ![9, 10, 13].includes(byte) || byte === 0x7f), 0) > 8) {
 			setStatus(`File “${file.name}” appears to be binary, not text.`, "err");
 			return;
 		}
 	}
 
-	contentEl.value = text;
-	if (file.name.length <= filenameEl.maxLength) filenameEl.value = file.name;
+	if (typeof addLoadedFile === 'function' && fileEditor) {
+		try { addLoadedFile(file.name, text, actualMediaType ?? contentTypeForFilename(file.name)); }
+		catch (error) { setStatus(error.message, 'err'); return; }
+	} else {
+		contentEl.value = text;
+		if (file.name.length <= filenameEl.maxLength) filenameEl.value = file.name;
+	}
 	const storedByteLength = updateBytes();
 	contentEl.focus();
 	contentEl.setSelectionRange(0, 0);
@@ -243,10 +227,16 @@ async function loadFile(file) {
 }
 
 fileButtonEl.addEventListener("click", () => fileInputEl.click());
-fileInputEl.addEventListener("change", () => {
-	const file = fileInputEl.files?.[0];
-	fileInputEl.value = "";
-	if (file) void loadFile(file);
+async function loadFiles(files) {
+	if (isBusy) return;
+	setBusy(true);
+	try { for (const file of files) await loadFile(file); }
+	finally { setBusy(false); }
+}
+fileInputEl.addEventListener('change', () => {
+	const files = Array.from(fileInputEl.files ?? []);
+	fileInputEl.value = '';
+	void loadFiles(files);
 });
 
 function dragHasFiles(event) {
@@ -274,11 +264,7 @@ contentEl.addEventListener("drop", (event) => {
 	contentEl.classList.remove("file-drag-active");
 	const files = event.dataTransfer?.files;
 	if (!files || files.length === 0) return;
-	if (files.length !== 1) {
-		setStatus("Drop one file at a time.", "err");
-		return;
-	}
-	void loadFile(files[0]);
+	void loadFiles(Array.from(files));
 });
 
 contentEl.addEventListener("paste", (event) => {
@@ -291,11 +277,7 @@ contentEl.addEventListener("paste", (event) => {
 	const mediaFiles = files.filter((file) => mediaTypeHint(file));
 	if (mediaFiles.length === 0) return;
 	event.preventDefault();
-	if (mediaFiles.length !== 1 || files.length !== 1) {
-		setStatus("Paste one media file at a time.", "err");
-		return;
-	}
-	void loadFile(mediaFiles[0]);
+	void loadFiles(mediaFiles);
 });
 
 let nativeSha256Available = typeof globalThis.crypto?.subtle?.digest === "function";
@@ -388,6 +370,7 @@ function powProgressText({ workerCount, implementations, difficulty, attempts, p
  * Split the nonce range across a worker pool. Worker i searches
  * start + i, start + i + workerCount, ... so no two workers overlap.
  */
+let cancelProof;
 async function solvePow(challenge) {
 	const { challenge_id, nonce, content_hash, difficulty, algorithm, expected_attempts_p50 } = challenge;
 	if (typeof challenge.signature !== "string" || challenge.signature.length === 0) {
@@ -426,11 +409,13 @@ async function solvePow(challenge) {
 			stopWorkers();
 			reject(error);
 		};
+		cancelProof = () => fail(new Error('Upload cancelled. Your draft is still here.'));
 		const updateProgress = () => {
 			const attempts = totalAttempts();
 			const ms = performance.now() - t0;
 			setStatus(powProgressText({ workerCount, implementations, difficulty, attempts, p50, elapsedMs: ms }));
 			if (attempts > p50 * 64) fail(new Error("proof search exceeded safety limit; retry publish"));
+			if (challenge.expires_at && Date.now() >= challenge.expires_at) fail(new Error('Proof expired. Please try again.'));
 		};
 
 		try {
@@ -493,9 +478,11 @@ async function solvePow(challenge) {
 async function publish() {
 	if (isBusy || !consentEl.checked || !moderationConsentEl.checked) return;
 	const content = contentEl.value;
-	const description = descriptionEl.value.trim();
 	const filename = filenameEl.value.trim();
 	const unlisted = !listedEl.checked;
+	let bundle = null;
+	try { if (typeof fileEditor !== 'undefined' && fileEditor) bundle = fileEditor.validate(); }
+	catch (error) { setStatus(error.message, 'err'); return; }
 	const byteLength = updateBytes();
 	const contentType = updateDetection();
 	if (byteLength === 0) {
@@ -522,7 +509,7 @@ async function publish() {
 			setStatus(`Validating ${contentType.toUpperCase()} image…`);
 			await verifyDecodableImage(content.trim());
 		}
-		const contentBytes = new TextEncoder().encode(content);
+		const contentBytes = new TextEncoder().encode(bundle ? JSON.stringify(bundle) : content);
 		setStatus(`Detected ${contentType}. Hashing and compressing content…`);
 		const [content_hash, compressedBytes] = await Promise.all([
 			sha256Hex(contentBytes),
@@ -550,10 +537,10 @@ async function publish() {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
+					...(bundle ? { format: 'bundle-v1' } : {}),
 					content_gzip: contentGzip,
 					compression: "gzip",
 					content_type: contentType,
-					description: description || undefined,
 					filename: filename || undefined,
 					unlisted,
 					consent: consentEl.checked,
@@ -575,6 +562,22 @@ async function publish() {
 		}
 
 		const deletionGrantStored = storeDeletionGrant(pasteBody);
+		const result = document.getElementById('upload-result');
+		if (result && typeof result.replaceChildren === 'function') {
+			const heading = document.createElement('h2');
+			heading.textContent = pasteBody.moderation?.visibility === 'hidden' ? 'Stored — review required' : 'Ready to share';
+			const message = document.createElement('p');
+			message.textContent = pasteBody.moderation?.message ?? 'Keep this link to return to your paste.';
+			const link = document.createElement('a'); link.href = `/${pasteBody.id}`; link.textContent = pasteBody.url; link.className = 'share-link';
+			const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy link';
+			copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(pasteBody.url); copy.textContent = 'Copied!'; } catch { setStatus('Select and copy the link above.', 'err'); } });
+			const open = document.createElement('a'); open.href = `/${pasteBody.id}`; open.textContent = 'Open paste →'; open.className = 'btn';
+			const actions = document.createElement('div'); actions.className = 'row'; actions.append(copy, open);
+			result.replaceChildren(heading, message, link, actions);
+			result.hidden = false; result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+			setStatus(deletionGrantStored ? 'Deletion is available in this browser for ten minutes.' : 'Keep your deletion token: browser storage is unavailable.', 'ok');
+			return;
+		}
 		if (pasteBody.moderation?.visibility === "hidden") {
 			setStatus(
 				`Stored ${pasteBody.id}\n${pasteBody.url}\nHidden pending moderation review; this URL is not publicly available yet.` +
@@ -599,6 +602,7 @@ async function publish() {
 publishBtn.addEventListener("click", () => {
 	void publish();
 });
+document.getElementById('cancel-publish')?.addEventListener('click', () => cancelProof?.());
 
 contentEl.addEventListener("keydown", (ev) => {
 	if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {

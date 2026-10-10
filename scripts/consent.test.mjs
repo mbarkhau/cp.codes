@@ -61,7 +61,8 @@ test("about page lists service providers and the data they process", async () =>
 	for (const name of ["Cloudflare", "DefAPI", "TypeSafe", "jsDelivr"]) {
 		assert.ok(html.includes(`<strong>${name}</strong>`));
 	}
-	assert.match(html, /Paste text, description, filename, and content type/);
+	assert.match(html, /Paste text, filename, and content type/);
+	assert.doesNotMatch(html, /id="description"|Description/);
 	assert.match(html, /Private IP\/location metadata and proof-of-work details are not sent/);
 });
 

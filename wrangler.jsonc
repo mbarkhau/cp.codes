@@ -4,17 +4,20 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-05",
 	"workers_dev": true,
+	// Paid Workers: allow bounded 8 MiB validation/recompression, not unlimited CPU.
+	"limits": { "cpu_ms": 250 },
 	"observability": {
 		"enabled": true
 	},
 	// Base SHA-256 PoW: 16 bits means 65,536 attempts on average and ~45,426
-	// attempts for a 50% chance. Recent upload volume raises this dynamically.
+	// attempts for a 50% chance. Estimated size cost and recent admitted cost raise it logarithmically.
 	"vars": {
-		"POW_DIFFICULTY_BITS": "16"
+		"POW_DIFFICULTY_BITS": "16",
+		"STAFF_ALLOW_DEVELOPMENT_LOGIN": "false"
 	},
 	// Values belong in .dev.vars locally and Worker secrets in production.
 	"secrets": {
-		"required": ["DEFAPI_KEY"]
+		"required": ["DEFAPI_KEY", "STAFF_CREDENTIALS"]
 	},
 	"assets": {
 		"directory": "./public",

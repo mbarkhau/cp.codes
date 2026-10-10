@@ -1,0 +1,405 @@
+# Jev-1.13 API
+URL: https://defapi.org/en/model/typesafe/jev-1.13
+model: typesafe/jev-1.13
+price: $0.084000 input, $0.000000 output
+
+Jev-1.13 by TypeSafe AI is a System One decision model for fast, type-safe probabilistic outputs via Choice, Score, and Noul APIs.
+
+
+
+## API Documentation
+
+openapi: 3.0.3
+info:
+  title: Decisions API
+  description: |
+    API for structured decisions using TypeSafe models (via OpenRouter).
+    Submit a state (text or structured data) with a set of typed questions
+    (noul / choice / score), and receive a structured answer per question.
+    Requires authentication via API key.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@defapi.org
+
+servers:
+  - url: https://api.defapi.org
+    description: Production server
+
+paths:
+  /api/v1/decisions:
+    post:
+      summary: Submit a decisions request
+      description: |
+        Evaluate the given state against a set of typed questions and get a
+        structured answer per question. Billing is based on token usage
+        (input_tokens / output_tokens) of the selected model.
+      tags:
+        - Decisions
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionsRequest'
+            examples:
+              noul:
+                summary: Boolean question (noul)
+                value:
+                  model: "typesafe/jev-1.13"
+                  state: "The team plans to deploy the payment service on Friday afternoon. Two past Friday deployments had incidents."
+                  questions:
+                    deploy_risk:
+                      type: "noul"
+                      instructions: "Assess the probability that this deployment goes without incidents."
+                      criteria:
+                        "true": "Standard change window, all checks passed"
+                        "false": "History of incidents in the same window"
+              choice:
+                summary: Single-choice question
+                value:
+                  model: "typesafe/jev-1.13"
+                  state:
+                    customer_tier: "enterprise"
+                    ticket: "My checkout page shows a blank screen after I click Pay."
+                  questions:
+                    team:
+                      type: "choice"
+                      instructions: "Which team should own this ticket?"
+                      criteria:
+                        account: "Login, permissions, or profile issues"
+                        frontend: "Rendering, layout, or browser compatibility issues"
+                        payments: "Checkout, billing, or payment processing issues"
+              score:
+                summary: Scored question
+                value:
+                  model: "typesafe/jev-1.13"
+                  state: "Checkout is completely broken for all customers."
+                  questions:
+                    urgency:
+                      type: "score"
+                      instructions: "How urgent is this ticket?"
+                      criteria:
+                        - "Can wait for the next release"
+                        - "Should be fixed this week"
+                        - "Blocking revenue right now"
+      responses:
+        '200':
+          description: Decisions evaluated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionsResponse'
+              examples:
+                noul:
+                  summary: Noul answer with billing fields
+                  value:
+                    id: "gen-dec-1789916581-nOeiIEyTJa7BsdEw3CvR"
+                    model: "typesafe/jev-1.13"
+                    provider: "TypeSafe"
+                    answers:
+                      deploy_risk:
+                        type: "noul"
+                        noul: 0.55
+                    usage:
+                      input_tokens: 316
+                      output_tokens: 22
+                      cost: 0.000013272
+                    task_id: "tae99430-c22e-403a-9468-02462ddcf9bc"
+                    consumed: "0.000013272"
+                choice:
+                  summary: Choice answer
+                  value:
+                    model: "typesafe/jev-1.13"
+                    answers:
+                      team:
+                        type: "choice"
+                        choice: "payments"
+                        probabilities:
+                          account: 0
+                          frontend: 0.16
+                          payments: 0.84
+                        confidence: 0.75
+                    usage:
+                      input_tokens: 476
+                      output_tokens: 70
+                    task_id: "taxxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    consumed: "0.000019992"
+                score:
+                  summary: Score answer
+                  value:
+                    model: "typesafe/jev-1.13"
+                    answers:
+                      urgency:
+                        type: "score"
+                        score: 1.99
+                        legend:
+                          "0": "Can wait for the next release"
+                          "1": "Should be fixed this week"
+                          "2": "Blocking revenue right now"
+                        probabilities:
+                          "0": 0
+                          "1": 0.01
+                          "2": 0.99
+                        confidence: 0.99
+                    usage:
+                      input_tokens: 420
+                      output_tokens: 60
+                    task_id: "taxxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    consumed: "0.00001764"
+        '400':
+          description: Bad request - invalid parameters or model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_model:
+                  summary: Model field missing
+                  value:
+                    code: 1
+                    message: "model is required"
+                model_not_found:
+                  summary: Model not configured
+                  value:
+                    code: 1
+                    message: "model not found"
+        '401':
+          description: Unauthorized - invalid or missing API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                no_api_key:
+                  summary: Missing API key
+                  value:
+                    code: 1
+                    message: "No API key provided"
+                invalid_api_key:
+                  summary: Invalid API key
+                  value:
+                    code: 1
+                    message: "Invalid API key"
+        '500':
+          description: Internal server error (upstream failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                upstream_error:
+                  summary: Upstream request failed
+                  value:
+                    code: 1
+                    message: "Internal server error"
+                    detail: "Failed to forward request to upstream API"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        API key for authentication. Format: `Bearer <your-api-key>`
+        Example: `Bearer dk-1234567890abcdef`
+
+  schemas:
+    DecisionsRequest:
+      type: object
+      required:
+        - model
+        - state
+        - questions
+      properties:
+        model:
+          type: string
+          description: |
+            Model identifier in "developer/model" format.
+            The available decision model is "typesafe/jev-1.13".
+          example: "typesafe/jev-1.13"
+        state:
+          description: |
+            The content to evaluate: a plain string, or a JSON object/array
+            of related context.
+          oneOf:
+            - type: string
+            - type: object
+            - type: array
+          example: "The team plans to deploy the payment service on Friday afternoon."
+        questions:
+          type: object
+          description: |
+            Map of question key to question definition. Keys are echoed back
+            in the answers object and do not participate in reasoning.
+          additionalProperties:
+            $ref: '#/components/schemas/DecisionsQuestion'
+          example:
+            deploy_risk:
+              type: "noul"
+              instructions: "Assess the probability that this deployment goes without incidents."
+        provider:
+          type: object
+          description: Optional provider routing preferences passed through to upstream
+        session_id:
+          type: string
+          maxLength: 256
+          description: Optional identifier for grouping related requests
+        user:
+          type: string
+          maxLength: 256
+          description: Optional end-user identifier passed through to upstream
+
+    DecisionsQuestion:
+      type: object
+      required:
+        - type
+        - instructions
+      properties:
+        type:
+          type: string
+          enum: ["noul", "choice", "score"]
+          description: |
+            Question type:
+            - noul: boolean question, answered with a 0-1 probability
+            - choice: pick one option from criteria keys (up to 255 options)
+            - score: rate against ordered criteria levels (2-10 levels)
+          example: "noul"
+        instructions:
+          type: string
+          description: What the question asks
+          example: "Assess the probability that this deployment goes without incidents."
+        criteria:
+          description: |
+            Type-dependent criteria:
+            - noul: object with "true"/"false" descriptions (optional)
+            - choice: object mapping option name to description (required)
+            - score: ordered array of level descriptions, 2-10 items (required)
+
+    DecisionsResponse:
+      type: object
+      required:
+        - model
+        - answers
+        - usage
+        - task_id
+        - consumed
+      properties:
+        id:
+          type: string
+          description: Unique identifier of the upstream evaluation
+          example: "gen-dec-1789916581-nOeiIEyTJa7BsdEw3CvR"
+        model:
+          type: string
+          description: Concrete model version that produced the answers
+          example: "typesafe/jev-1.13"
+        provider:
+          type: string
+          description: Upstream provider name
+          example: "TypeSafe"
+        answers:
+          type: object
+          description: Answer per question key, in the same shape as the request
+          additionalProperties:
+            $ref: '#/components/schemas/DecisionsAnswer'
+        usage:
+          $ref: '#/components/schemas/DecisionsUsage'
+        task_id:
+          type: string
+          description: Task identifier for querying and support
+          example: "tae99430-c22e-403a-9468-02462ddcf9bc"
+        consumed:
+          type: string
+          description: Actual billed amount (after user discounts) for this request
+          example: "0.000013272"
+
+    DecisionsUsage:
+      type: object
+      required:
+        - input_tokens
+        - output_tokens
+      properties:
+        input_tokens:
+          type: integer
+          description: Number of input tokens consumed
+          example: 316
+        output_tokens:
+          type: integer
+          description: Number of output tokens consumed
+          example: 22
+        cost:
+          type: number
+          format: double
+          description: Upstream cost of the request
+          example: 0.000013272
+
+    DecisionsAnswer:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: ["noul", "choice", "score"]
+          description: Answer type, matching the question type
+          example: "noul"
+        noul:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Probability that the answer is "true" (noul answers only)
+          example: 0.55
+        choice:
+          type: string
+          description: Selected option key (choice answers only)
+          example: "payments"
+        score:
+          type: number
+          format: float
+          description: Probability-weighted score against the criteria levels (score answers only)
+          example: 1.99
+        probabilities:
+          type: object
+          description: Probability distribution over option keys or score levels
+          additionalProperties:
+            type: number
+          example:
+            payments: 0.84
+            frontend: 0.16
+            account: 0
+        legend:
+          type: object
+          description: Mapping of score level index to its description (score answers only)
+          additionalProperties:
+            type: string
+          example:
+            "0": "Can wait for the next release"
+            "1": "Should be fixed this week"
+            "2": "Blocking revenue right now"
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Model confidence in the answer (choice/score answers)
+          example: 0.75
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: Error code
+          example: 1
+        message:
+          type: string
+          description: Error message
+          example: "model not found"
+        detail:
+          type: string
+          description: Detailed error information
+          example: "Failed to forward request to upstream API"

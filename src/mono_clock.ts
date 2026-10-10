@@ -13,6 +13,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 
+type ShortIdWindow = { tick: number; count: number };
+
 export type MonoClockParts = {
 	/** Unix timestamp (seconds), resolution-aligned. */
 	timestamp: number;
@@ -25,6 +27,8 @@ export class MonoClock extends DurableObject<Env> {
 	#lastTs = 0;
 	/** Last issued counter for `#lastTs` (`-1` means none yet). */
 	#lastCounter = -1;
+	/** Version-0 IDs consumed by this regional clock in one timestamp tick. */
+	#shortIds: ShortIdWindow = { tick: -1, count: 0 };
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -38,7 +42,24 @@ export class MonoClock extends DurableObject<Env> {
 			} else {
 				this.#lastCounter = storedCounter ?? -1;
 			}
+			this.#shortIds = (await this.ctx.storage.get<ShortIdWindow>('short-ids')) ?? this.#shortIds;
 		});
+	}
+
+	/** Version-0 IDs already consumed by this region in the current tick.
+	 * Count continues beyond the 4-bit counter because overflow sacrifices timestamp accuracy. */
+	async shortIdCount(resolution: number, now = Date.now() / 1000): Promise<number> {
+		if (!(resolution > 0) || !Number.isFinite(resolution) || !Number.isFinite(now)) throw new Error('invalid short ID window');
+		return Math.floor(now / resolution) === this.#shortIds.tick ? this.#shortIds.count : 0;
+	}
+
+	async recordShortId(resolution: number, now = Date.now() / 1000): Promise<number> {
+		const tick = Math.floor(now / resolution);
+		if (!Number.isSafeInteger(tick)) throw new Error('invalid short ID tick');
+		const count = (tick === this.#shortIds.tick ? this.#shortIds.count : 0) + 1;
+		this.#shortIds = { tick, count };
+		await this.ctx.storage.put('short-ids', this.#shortIds);
+		return count;
 	}
 
 	/**
@@ -87,9 +108,14 @@ export class MonoClock extends DurableObject<Env> {
 
 		this.#lastTs = tick * resolution;
 		this.#lastCounter = counter;
+		if (maxCounter === 16) {
+			const count = (tick === this.#shortIds.tick ? this.#shortIds.count : 0) + 1;
+			this.#shortIds = { tick, count };
+		}
 		await this.ctx.storage.put({
 			last: this.#lastTs,
 			counter: this.#lastCounter,
+			'short-ids': this.#shortIds,
 		});
 		return { timestamp: this.#lastTs, counter };
 	}

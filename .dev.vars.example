@@ -1,0 +1,6 @@
+# Copy to .dev.vars and supply a real DefAPI key. Never commit .dev.vars.
+DEFAPI_KEY=
+# Development only: admin / 4dm1n and moderator / hunter2.
+# NEVER enable this flag in a deployed Worker.
+STAFF_ALLOW_DEVELOPMENT_LOGIN=true
+STAFF_CREDENTIALS=
