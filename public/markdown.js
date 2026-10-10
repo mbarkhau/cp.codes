@@ -1,6 +1,6 @@
 /** HTML is disabled; only explicit sibling images load, never remote trackers. */
 export async function markdownElement(content, attachments = new Map()) {
-	const { default: MarkdownIt } = await import('https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/+esm');
+	const { default: MarkdownIt } = await import('/lib/markdown-it-14.1.0.js');
 	const markdown = new MarkdownIt({ html: false, linkify: true, typographer: false });
 	const localFile = value => {
 		try { return attachments.get(decodeURIComponent(value.replace(/^\.\//, ''))); } catch { return null; }

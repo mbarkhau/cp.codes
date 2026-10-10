@@ -4,7 +4,7 @@
  * into the modules and a gray footer label underneath.
  */
 
-import { encode as encodeQr } from "https://cdn.jsdelivr.net/npm/uqr@0.1.2/+esm";
+import { encode as encodeQr } from "/lib/uqr-0.1.2.js";
 
 const QUIET_ZONE_MODULES = 4;
 const ECC_H_RECOVERABLE_AREA_FRACTION = 0.30;

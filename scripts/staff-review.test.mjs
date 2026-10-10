@@ -87,7 +87,7 @@ for (const [index, reason] of ["spam", "CSAM", "malware or phishing"].entries())
 				if (suffix === "view") {
 					const html = await response.text();
 					assert.ok(html.includes(`data-content-url="/admin/paste/${id}/content"`));
-					assert.ok(html.includes(`href="/admin/paste/${id}/raw"`));
+					assert.ok(html.includes(`data-raw-url="/admin/paste/${id}/raw"`));
 					assert.ok(html.includes('data-staff-review="true"'));
 					assert.ok(!html.includes(content));
 				} else if (suffix === "raw") {

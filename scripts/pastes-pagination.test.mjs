@@ -84,7 +84,14 @@ test('first page shows exactly 50 newest approved listed pastes, independent of 
 	assert.match(html, /href="\/pastes\?page=2" rel="next"/);
 	assert.equal([...html.matchAll(/aria-label="Paste pages"/g)].length, 2);
 	assert.doesNotMatch(html, /rel="prev"/);
-	assert.match(html, /Preview #102 &lt;script&gt;not executable&lt;\/script&gt;/);
+	const table = html.match(/<table class="recent-list">([\s\S]*?)<\/table>/)[1];
+	assert.deepEqual([...table.matchAll(/<th\b[^>]*>([^<]+)<\/th>/g)].map(match => match[1]),
+		['id', 'filename', 'hits', 'bytes', 'timestamp']);
+	assert.match(table, /<td class="recent-filename" title="note102.txt">note102.txt<\/td>/);
+	assert.match(table, /<td class="recent-hits">0<\/td>/);
+	assert.match(table, /<td class="recent-bytes">12<\/td>/);
+	assert.match(table, /<td class="recent-meta">2026-01-01 00:00:34Z<\/td>/);
+	assert.doesNotMatch(table, /Preview #|recent-preview|type-badge|PoW|Proof-of-work/);
 	assert.doesNotMatch(html, /private-audit-marker/);
 });
 

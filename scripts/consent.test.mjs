@@ -53,10 +53,14 @@ test("upload page displays separate unchecked consent controls", async () => {
 	assert.match(html, /id="publish" disabled/);
 	assert.match(html, /id="listed" checked \/>/);
 	assert.match(html, /id="file-editors"[^>]*>\s*<article class="editor-card editor-placeholder" aria-hidden="true">/);
-	assert.match(html, /#file-editors, \.editor-placeholder \{ min-height: 320px; \}/);
+	assert.match(html, /<link rel="stylesheet" href="\/style\.css\?v=\d+" \/>/);
+	assert.doesNotMatch(html, /<style[\s>]/);
+	const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+	assert.match(css, /#file-editors, \.editor-placeholder \{ min-height: 320px; \}/);
 	assert.match(html, />Add file</);
 	assert.match(html, /\(max\. 8 MiB\)/);
 	assert.doesNotMatch(html, /file-sidebar|note\.md|id="content"|Make .* the main document/);
+	assert.doesNotMatch(html, /upload-result/);
 
 });
 
@@ -114,9 +118,19 @@ test("browser requires both consents, locks both while busy, and submits both", 
 	getElement("content-type").value = "plaintext";
 	getElement("content-type").options = [{ value: "plaintext", textContent: "Plaintext" }];
 	const requests = [];
+	const authorizations = [];
+	const location = { href: '' };
+	let authorizationStored = true;
+	let visibility = 'hidden';
 	const context = vm.createContext({
 		document: { getElementById: getElement }, TextEncoder,
+		window: { location },
 		localStorage: { length: 0 }, detectContentType: () => "plaintext",
+		storeAuthorization: (id, passcode) => {
+			assert.equal(location.href, '');
+			authorizations.push({ id, passcode });
+			return authorizationStored;
+		},
 		contentTypeForFilename: () => "plaintext",
 		sha256Hex: async () => "hash", gzip: async () => new Uint8Array([1]),
 		bytesToBase64: () => "gzip", solvePow: async () => ({ solution: "0", pow_hash: "proof" }),
@@ -125,7 +139,7 @@ test("browser requires both consents, locks both while busy, and submits both", 
 			assert.equal(getElement("consent").disabled, true);
 			assert.equal(getElement("consent-moderation").disabled, true);
 			return { ok: true, json: async () => path === "/api/challenge" ? {} : {
-				id: "CPTEST00", moderation: { visibility: "hidden" },
+				id: "CPTEST00", passcode: "0123456789abcdef", moderation: { visibility },
 			} };
 		},
 	});
@@ -160,4 +174,13 @@ test("browser requires both consents, locks both while busy, and submits both", 
 	assert.equal(getElement("consent").disabled, false);
 	assert.equal(getElement("consent-moderation").disabled, false);
 	assert.equal(getElement("publish").disabled, false);
+	assert.equal(location.href, '/CPTEST00');
+	assert.deepEqual(authorizations, [{ id: 'CPTEST00', passcode: '0123456789abcdef' }]);
+	// Successful uploads navigate even when browser storage is unavailable.
+	for (visibility of ['hidden', 'limited']) {
+		authorizationStored = false;
+		location.href = '';
+		await vm.runInContext("publish()", context);
+		assert.equal(location.href, '/CPTEST00');
+	}
 });

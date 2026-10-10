@@ -5,6 +5,7 @@ import { isDifficultyBits, MAX_POW_DIFFICULTY_BITS, powKeyStub } from "./pow";
 import { staffUsers, verifyStaffCredentials, developmentStaffEnabled } from './staff';
 import { getPowDifficultyState, type PowDifficultyState } from "./pow_settings";
 import { layout, viewPage } from "./ui";
+import { assetUrl } from './assets';
 import {
 	allowLoginAttempt, createSession, revokeSession, sessionCookie,
 	sessionToken, sessionTransportAllowed, sessionUsername,
@@ -83,7 +84,7 @@ function badRequest(message: string, api = true, status = 400): Response {
  * Sec-Fetch-Site is browser-controlled; Origin remains the fallback for clients
  * which do not send Fetch Metadata headers.
  */
-function hasValidMutationOrigin(request: Request, allowMissingOrigin = sessionToken(request) === null): boolean {
+export function hasValidMutationOrigin(request: Request, allowMissingOrigin = sessionToken(request) === null): boolean {
 	const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
 	if (fetchSite === "same-origin") return true;
 	if (fetchSite === "same-site" || fetchSite === "cross-site") return false;
@@ -138,7 +139,7 @@ ${message ? `<p class="status err" role="alert">${escapeHtml(message)}</p>` : ""
 </form><p>Staff sessions expire after eight hours. No login is needed to publish a paste.</p>
 </section>`, undefined, undefined, { currentPath: "/login" });
 	const headers = staffHeaders("text/html; charset=utf-8");
-	headers.set("content-security-policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+	headers.set("content-security-policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 	return new Response(html, { status, headers });
 }
 
@@ -378,22 +379,16 @@ const REVIEW_SCRIPT = `<script>
 })();
 </script>`;
 
-const ADMIN_STYLE = `
-#minimum-difficulty,#short-id-increment{max-width:12rem;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:.55rem .7rem}
-#minimum-difficulty:focus,#short-id-increment:focus{outline:2px solid var(--focus);outline-offset:1px}
-.staff-heading{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:.75rem;margin-bottom:1rem}.staff-heading h1{margin:0;font-size:1.35rem}.identity,.muted,.small{color:var(--muted)}.small{font-size:.75rem}.mono,pre{font-family:var(--mono)}.strong{font-weight:700}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:.7rem .65rem;border-top:1px solid var(--border);text-align:left;vertical-align:top}th{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}.review-table td{min-width:8rem}.review-table th:nth-child(3),.review-table th:nth-child(4),.review-table td:nth-child(3),.review-table td:nth-child(4){text-align:center}.review-table td:nth-child(5){min-width:10rem}.pending-row{background:color-mix(in srgb,var(--danger) 7%,transparent)}.flag{display:inline-block;font-size:.75rem;font-weight:650}.flag.pending{color:var(--danger)}.report-list{max-width:24rem;margin:.4rem 0;padding-left:1.2rem}.report-list li+li{margin-top:.5rem}.cell-action,.classification-action{margin:.45rem 0 0}.cell-action button,.classification-action select{width:100%;min-height:2.25rem;padding:.35rem .55rem;font:inherit}.cell-action .secondary{color:var(--fg);background:var(--surface);border-color:var(--border)}.visibility{font-weight:650}.visibility-hidden,.visibility-deleted{color:var(--danger)}.review-filters{display:grid;grid-template-columns:repeat(7,minmax(8rem,1fr));gap:.7rem;align-items:end}.review-filters label{margin:0}.review-filters select{display:block;width:100%;margin-top:.25rem}.pager{display:flex;justify-content:flex-end;align-items:center;gap:.75rem;margin-top:1rem}.button{padding:.5rem .8rem;border:1px solid var(--border);border-radius:6px;text-decoration:none}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}details summary{cursor:pointer;color:var(--accent)}pre{max-height:28rem;overflow:auto;padding:1rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:.75rem;white-space:pre-wrap;overflow-wrap:anywhere}.referer{max-width:32rem;overflow-wrap:anywhere}@media(max-width:1100px){.review-filters{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:700px){.review-filters{grid-template-columns:1fr 1fr}.card{padding:.8rem}}
-`.trim();
-
 function staffPage(user: StaffUser, currentPath: string, title: string, content: string, script?: string): Response {
 	const body = `<div class="staff-heading"><h1>${escapeHtml(title)}</h1><div class="identity">signed in as <strong>${escapeHtml(user.username)}</strong> · ${escapeHtml(user.role)}</div></div>${content}`;
 	const html = layout(`${title} — cp.codes`, body, script, undefined, {
 		currentPath,
 		showStaffNavigation: true,
 		wide: true,
-		extraStyle: ADMIN_STYLE,
+		extraStylesheet: assetUrl('/admin.css'),
 	});
 	const headers = staffHeaders("text/html; charset=utf-8");
-	headers.set("content-security-policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+	headers.set("content-security-policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 	return new Response(html, { headers });
 }
 

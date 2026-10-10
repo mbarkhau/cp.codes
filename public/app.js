@@ -5,8 +5,9 @@
  */
 import { contentTypeForFilename, detectContentType } from "./content_type.js?v=8";
 import { MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType } from "./media.js?v=1";
-import { createFileEditor } from './files.js?v=31';
-import { MAX_UPLOAD_BYTES } from './policy.js';
+import { createFileEditor } from './files.js?v=33';
+import { MAX_UPLOAD_BYTES } from './policy.js?v=1';
+import { storeAuthorization } from './authorization.js?v=1';
 
 const contentEl = document.getElementById("content");
 const filenameEl = document.getElementById("filename");
@@ -26,56 +27,6 @@ const fileButtonEl = document.getElementById("file-button");
 // The shared cost policy gives immediate feedback; the signed challenge
 // and atomic server admission remain authoritative.
 const MAX_POW_SUBMISSION_ATTEMPTS = 2;
-const DELETION_STORAGE_PREFIX = "cp.codes.deletion.v1:";
-
-function removeExpiredDeletionGrants() {
-	const expiredKeys = [];
-	const now = Date.now();
-	try {
-		for (let index = 0; index < localStorage.length; index++) {
-			const key = localStorage.key(index);
-			if (!key?.startsWith(DELETION_STORAGE_PREFIX)) continue;
-			let grant;
-			try {
-				grant = JSON.parse(localStorage.getItem(key) || "null");
-			} catch {
-				continue;
-			}
-			if (Number.isSafeInteger(grant?.expiresAt) && grant.expiresAt <= now) {
-				expiredKeys.push(key);
-			}
-		}
-		for (const key of expiredKeys) localStorage.removeItem(key);
-	} catch {
-		// Storage may be unavailable; paste creation can continue without cleanup.
-	}
-}
-
-removeExpiredDeletionGrants();
-
-function storeDeletionGrant(pasteBody) {
-	const id = typeof pasteBody?.id === "string" ? pasteBody.id.toUpperCase() : "";
-	const token = pasteBody?.deletion_token;
-	const expiresAt = pasteBody?.deletion_expires_at;
-	if (
-		!/^CP(?:[0-9A-Z]{6,7}|[0-9A-Z]{10})$/.test(id) ||
-		typeof token !== "string" ||
-		!/^[0-9a-f]{64}$/.test(token) ||
-		!Number.isSafeInteger(expiresAt) ||
-		expiresAt <= Date.now()
-	) {
-		return false;
-	}
-	try {
-		localStorage.setItem(
-			`${DELETION_STORAGE_PREFIX}${id}`,
-			JSON.stringify({ token, expiresAt }),
-		);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 function setStatus(text, kind = "") {
 	statusEl.textContent = text;
@@ -297,7 +248,7 @@ async function sha256Hex(input) {
 		}
 	}
 
-	wasmSha256Promise ??= import("https://cdn.jsdelivr.net/npm/hash-wasm@4.12.0/+esm")
+	wasmSha256Promise ??= import("/lib/hash-wasm-4.12.0.js")
 		.then((module) => module.sha256);
 	const wasmSha256 = await wasmSha256Promise;
 	return wasmSha256(data);
@@ -463,7 +414,7 @@ async function solvePow(challenge) {
 
 		try {
 			for (let workerId = 0; workerId < workerCount; workerId++) {
-				const worker = new Worker("/pow_worker.js?v=1", { type: "module" });
+				const worker = new Worker("/pow_worker.js?v=2", { type: "module" });
 				workers.push(worker);
 				worker.addEventListener("message", (event) => {
 					if (settled) return;
@@ -609,35 +560,7 @@ async function publish() {
 			}
 		}
 
-		const deletionGrantStored = storeDeletionGrant(pasteBody);
-		const result = document.getElementById('upload-result');
-		if (result && typeof result.replaceChildren === 'function') {
-			const heading = document.createElement('h2');
-			heading.textContent = pasteBody.moderation?.visibility === 'hidden' ? 'Stored — review required' : 'Ready to share';
-			const message = document.createElement('p');
-			message.textContent = pasteBody.moderation?.message ?? 'Keep this link to return to your paste.';
-			const link = document.createElement('a'); link.href = `/${pasteBody.id}`; link.textContent = pasteBody.url; link.className = 'share-link';
-			const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy link';
-			copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(pasteBody.url); copy.textContent = 'Copied!'; } catch { setStatus('Select and copy the link above.', 'err'); } });
-			const open = document.createElement('a'); open.href = `/${pasteBody.id}`; open.textContent = 'Open paste →'; open.className = 'btn';
-			const actions = document.createElement('div'); actions.className = 'row'; actions.append(copy, open);
-			result.replaceChildren(heading, message, link, actions);
-			result.hidden = false; result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-			setStatus(deletionGrantStored ? 'Deletion is available in this browser for ten minutes.' : 'Keep your deletion token: browser storage is unavailable.', 'ok');
-			return;
-		}
-		if (pasteBody.moderation?.visibility === "hidden") {
-			setStatus(
-				`Stored ${pasteBody.id}\n${pasteBody.url}\nHidden pending moderation review; this URL is not publicly available yet.` +
-					(deletionGrantStored ? "" : "\nWarning: this browser could not save the deletion token."),
-			);
-			return;
-		}
-		setStatus(
-			`Published ${pasteBody.id}\n${pasteBody.url}` +
-				(deletionGrantStored ? "" : "\nWarning: this browser could not save the deletion token."),
-			"ok",
-		);
+		storeAuthorization(pasteBody.id, pasteBody.passcode);
 		window.location.href = `/${pasteBody.id}`;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

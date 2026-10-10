@@ -173,7 +173,7 @@ test("browser publish submits encoded media with the matching type and body-boun
 		Object.assign(b.context, {
 			TextEncoder, isBusy: false, consentEl: { checked: true }, moderationConsentEl: { checked: true },
 			listedEl: { checked: true },
-			updateDetection: () => media.type, setBusy() {}, storeDeletionGrant: () => true,
+			updateDetection: () => media.type, setBusy() {}, storeAuthorization: () => true, passphraseFromPasscode: () => 'fixture phrase',
 			sha256Hex: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
 			gzip: async (bytes) => gzipSync(bytes), MAX_POW_SUBMISSION_ATTEMPTS: 1,
 			solvePow: async () => ({ solution: "0", pow_hash: "proof" }),

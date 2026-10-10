@@ -5,7 +5,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-const proofSearch = source.slice(source.indexOf("function formatPowDuration"), source.indexOf("async function publish()"));
+const proofSearch = source.slice(source.indexOf("const POW_RATE_KEY"), source.indexOf("async function publish()"));
 
 function harness() {
 	let now = 0;
@@ -142,8 +142,8 @@ test("attempt and time numbers are right-aligned across both rows", () => {
 });
 
 test("status styling preserves the monospaced column padding", async () => {
-	const ui = await readFile(new URL("../src/ui.ts", import.meta.url), "utf8");
-	const style = ui.match(/\.status \{([^}]+)\}/)[1];
+	const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+	const style = css.match(/\.status \{([^}]+)\}/)[1];
 	assert.match(style, /font-family: var\(--mono\)/);
 	assert.match(style, /white-space: pre-wrap/);
 });

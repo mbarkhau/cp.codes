@@ -19,7 +19,7 @@ async function sha256Hex(text) {
 		}
 	}
 
-	wasmSha256Promise ??= import("https://cdn.jsdelivr.net/npm/hash-wasm@4.12.0/+esm")
+	wasmSha256Promise ??= import("/lib/hash-wasm-4.12.0.js")
 		.then((module) => module.sha256);
 	const wasmSha256 = await wasmSha256Promise;
 	return wasmSha256(data);

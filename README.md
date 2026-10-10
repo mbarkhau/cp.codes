@@ -27,6 +27,21 @@ cp .dev.vars.example .dev.vars # set DEFAPI_KEY; development staff fixtures are 
 make dev          # wrangler dev → http://localhost:8787
 ```
 
+Browser assets use `Cache-Control: public, max-age=31536000, immutable`
+when their URL matches the current version in `src/assets.ts`. Pinned vendor
+libraries under `public/lib/` use versioned filenames and the same policy.
+Development hosts use the same policy as production. Unversioned or outdated
+asset URLs revalidate instead. HTML, API responses, and paste contents keep their
+existing cache policies. During development, bump asset versions or enable the
+browser's DevTools **Disable cache** option to see edits to cached assets.
+
+When editing a browser asset, bump its entry in `CLIENT_ASSET_VERSIONS`, update
+the version in every client import, and bump each importing module's version as
+well, continuing through its importers. Server-generated URLs and preloads use
+`assetUrl()` to read the registry. `scripts/assets.test.mjs` checks that every
+application JS/CSS file is registered, client references agree with the registry,
+and both Worker asset routes apply the cache policy. No client build step is needed.
+
 Optional PoW tuning (also settable in `wrangler.jsonc` `vars`):
 
 |        Variable       | Default |                        Meaning                        |
@@ -91,9 +106,9 @@ python3 scripts/paste.py --consent-all archive.zip
 cat archive.zip | python3 scripts/paste.py --consent-all --binary --filename archive.zip
 ```
 
-The default output is the paste URL on stdout; progress, the 10-minute deletion
-token, and moderation warnings go to stderr. `--json` returns the full API response
-(including the deletion token) on stdout. Keep that response private. Unlisted
+The default output is the paste URL on stdout; progress, the passcode/passphrase,
+and moderation warnings go to stderr. `--json` returns the full API response
+(including the authorization credentials) on stdout. Keep that response private. Unlisted
 pastes stay outside the feed, but are not secret storage. AI-cleared text has a limited
 IP audience; unsupported or uncertain content is held for human review.
 
@@ -197,9 +212,22 @@ classification runs. The challenge is redeemed after a valid proof and current-p
 inflation and moderation; unsuccessful admitted payloads still consume cost budget. If the server rejects
 a proof as invalid, expired, or already used, the browser requests one fresh
 challenge and solves it again before reporting an error. A successful response
-also includes a random `deletion_token` and `deletion_expires_at` timestamp. The
-browser stores this grant in local storage for that paste; it is never returned
-by the read API and expires after 10 minutes.
+also includes a unique server-generated `passcode` and its equivalent `passphrase`.
+The passcode is 16 hex characters (eight random bytes); each byte indexes one of
+the 256 words in `public/wordlist.js`, producing an eight-word phrase. Only the
+passcode is stored server-side, in a private SQLite table with a uniqueness
+constraint. Neither credential appears in public reads, listings, staff metadata,
+R2 custom metadata, or moderation requests. These credentials have no expiry.
+Public reading continues to follow the existing moderation and sharing policy.
+
+The browser saves both credentials under `cp.codes.authorization.v1:<ID>` in
+local storage. Only the passphrase is displayed, as a compact two-row, four-column
+preformatted grid below the paste content, using eight asterisks per word until
+clicked (or activated with Enter or Space) to reveal it. Without a saved credential,
+the yellow padlock opens an authorization dialog. Anyone with either credential
+can permanently delete the paste. Keep a separate copy if browser storage may be
+cleared. Existing pastes without a passcode retain their read behavior and can
+still be deleted by staff; expired legacy deletion tokens cannot claim them.
 
 `content_type` must be the client's resolved type: `plaintext`, `url`, `markdown`,
 `png`, `jpeg`, `webp`, `gif`, `mp3`, `mp4`, `javascript`, `typescript`, `python`, `java`, `json`, `html`, `css`, `shell`, `sql`,
@@ -232,17 +260,25 @@ size-limited custom metadata, and is excluded from public paste, recent-upload a
 creation responses. Only the trusted edge IP is used for access admission. `GET /client-info` displays the values that
 would be retained for the current request.
 
+### `POST /api/paste/:id/authorize`
+
+Verify a credential before saving it in another browser. Accepts either
+`passcode` or `passphrase`, returning `{ "authorized": true, "id": "…" }`.
+Hex codes and phrases are case-insensitive; phrases accept whitespace or hyphens
+between words. Attempts are rate limited per IP. The endpoint does not change
+public reading or moderation state.
+
 ### `DELETE /api/paste/:id`
 
-During the 10 minutes after creation, delete a paste by submitting the bearer grant
-in the JSON body:
+Delete a paste at any time by submitting either credential in the JSON body:
 
 ```json
-{ "deletion_token": "<token returned by POST /api/paste>" }
+{ "passcode": "<passcode returned by POST /api/paste>" }
 ```
 
-The paste view shows a delete button and live countdown only when this browser has
-an unexpired grant for that paste in local storage. Deletion removes the R2 body and
+Alternatively submit `{ "passphrase": "<eight-word phrase>" }`.
+The paste view shows a delete button when this browser has a saved passcode.
+Deletion removes the R2 body and
 sets the PasteIndex visibility to `deleted`; the paste metadata is retained for the
 audit trail.
 
@@ -371,7 +407,8 @@ uncompressed lengths instead of embedding the plaintext content.
 | `GET /api/paste/CP………/content`                         | Exact stored gzip bytes (single file or bundle container) |
 | `GET /CP………/files/:name[?download]` | Decoded bundle file under the same access gate |
 | `GET /api/pastes?limit=40`                             | Recent uploads (newest first, preview, hit count, and PoW difficulty)                               |
-| `DELETE /api/paste/CP………`                              | Delete using the creator's short-lived token while retaining metadata                               |
+| `POST /api/paste/CP………/authorize`                      | Verify a passcode/passphrase before saving browser authorization                                    |
+| `DELETE /api/paste/CP………`                              | Delete using a passcode/passphrase at any time while retaining metadata                             |
 | `POST /api/paste/CP………/report`                         | Report suspected illegal content with an optional category and email                                |
 | `GET /admin/reports`                                   | Redirect to the review panel filtered to all reported pastes                                        |
 | `GET /admin/users`                                     | Staff account list                                                                                  |

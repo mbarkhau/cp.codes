@@ -114,7 +114,8 @@ class PasteTests(unittest.TestCase):
                         response, status = {"error": "proof rejected"}, rejection
                     else:
                         response, status = {
-                            "url": "https://cp.codes/CPTEST", "deletion_token": "secret",
+                            "url": "https://cp.codes/CPTEST", "passcode": "0001020304050607",
+                            "passphrase": "abacus abraham academy acrobat admiral albino alcohol aquarium",
                             "moderation": {"visibility": "hidden"},
                         }, 201
                 data = json.dumps(response).encode()
@@ -148,7 +149,7 @@ class PasteTests(unittest.TestCase):
                     self.assertIn("HTTP 400: proof rejected", stderr.getvalue())
                 else:
                     self.assertEqual(code, 0, stderr.getvalue())
-                    self.assertEqual(json.loads(stdout.getvalue())["deletion_token"], "secret")
+                    self.assertEqual(json.loads(stdout.getvalue())["passcode"], "0001020304050607")
                     self.assertIn("hidden pending moderation", stderr.getvalue())
                 expected = 2 if rejection in (403, 409) else 1
                 self.assertEqual(len(challenges), expected)

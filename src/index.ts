@@ -25,7 +25,8 @@
  *   POST   /api/paste      verify PoW, mint CP-Code, store paste
  *   GET    /api/paste/:id          JSON metadata
  *   GET    /api/paste/:id/content  stored compressed body
- *   DELETE /api/paste/:id          delete with the creator's short-lived token
+ *   POST   /api/paste/:id/authorize verify a passcode/passphrase
+ *   DELETE /api/paste/:id          delete with a passcode/passphrase at any time
  *   POST   /api/paste/:id/report   report suspected illegal content
  *   GET  /api/pastes     recent uploads (newest first)
  *   GET  /api/admin             authenticated full staff dataset
@@ -47,7 +48,9 @@ import { assessPaste, initialModeration } from "./jev.mjs";
 import { MAX_UPLOAD_BYTES, MAX_REQUEST_BYTES, trafficDifficultyBits, shortIdDifficultyBits } from '../public/policy.js';
 import { clientIp } from './identity';
 import { boundedJson, boundedBytes, BodyLimitError } from './body';
+import { normalizePasscode, passphraseFromPasscode } from '../public/authorization.js';
 import { parseBundle, bundleManifest, bundleAssessmentText, bundleFileResponse, type Bundle } from './bundle';
+import { withAssetCachePolicy } from './assets';
 
 export { MonoClock } from "./mono_clock";
 export { PowKey } from "./pow";
@@ -542,9 +545,6 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 			leading_zero_bits: leadingZeroBits,
 		},
 	};
-	const deletionToken = pow.randomHex(32);
-	const deletionExpiresAt = Date.now() + paste.DELETION_TOKEN_TTL_MS;
-	const deletionTokenHash = await pow.sha256Hex(deletionToken);
 	// Evaluate the already verified/decompressed buffer once, before publishing.
 	// Failures, uncertain results, images, and over-context pastes are held for
 	// staff review. No external I/O occurs inside a DO concurrency block.
@@ -553,11 +553,11 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 	const assessment = await assessPaste({ ...meta, content_type: combined?.unsupported ? 'png' : meta.content_type,
 		byte_length: new TextEncoder().encode(assessmentText).length }, assessmentText, env.DEFAPI_KEY);
 	const moderation = initialModeration(assessment);
+	const passcode = await paste.pasteIndexStub(env).createPasscode(id);
 	await paste.putPaste(
 		env,
 		meta,
 		storedGzip,
-		{ tokenHash: deletionTokenHash, expiresAt: deletionExpiresAt },
 		paste.makePreview(bundle?.files.find(file => file.name === bundle.primary)?.content ?? content),
 		assessment,
 	);
@@ -594,8 +594,8 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 				requires_review: moderation.requires_review,
 				assessment_status: assessment.status,
 			},
-			deletion_token: deletionToken,
-			deletion_expires_at: deletionExpiresAt,
+			passcode,
+			passphrase: passphraseFromPasscode(passcode),
 			pow: {
 				challenge_id: challenge.challenge_id,
 				solution,
@@ -908,25 +908,43 @@ async function handleReportPaste(request: Request, env: Env, id: string): Promis
 }
 
 async function handleDeletePaste(request: Request, env: Env, id: string): Promise<Response> {
+	if (!admin.hasValidMutationOrigin(request)) return error('Invalid request origin', 403);
 	let body: unknown;
 	try {
 		body = await boundedJson(request, 4096);
-	} catch {
-		return error("invalid JSON body");
+	} catch (err) {
+		return error("invalid JSON body", err instanceof BodyLimitError ? 413 : 400);
 	}
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
 		return error("body must be an object");
 	}
-	const deletionToken = (body as Record<string, unknown>).deletion_token;
-	if (typeof deletionToken !== "string") {
-		return error("deletion_token must be a string");
-	}
-
-	const result = await paste.deletePasteWithToken(env, id, deletionToken);
+	const rec = body as Record<string, unknown>;
+	const passcode = normalizePasscode(rec.passcode ?? rec.passphrase);
+	if (!passcode) return error('A valid passcode or passphrase is required', 403);
+	const result = await paste.deleteAuthorizedPaste(env, id, passcode);
 	if (result === "not_found") return error("paste not found", 404);
-	if (result === "expired") return error("deletion token expired", 410);
-	if (result === "invalid_token") return error("invalid deletion token", 403);
+	if (result === "unauthorized") return error("Invalid passcode or passphrase", 403);
 	return json({ deleted: true, id });
+}
+
+async function handleAuthorizePaste(request: Request, env: Env, id: string): Promise<Response> {
+	if (!admin.hasValidMutationOrigin(request)) return error('Invalid request origin', 403);
+	const requester = clientIp(request);
+	if (!requester) return error('Trusted edge IP identity is unavailable', 403);
+	if (!await pow.powKeyStub(env).allowChallenge(await pow.sha256Hex(`authorization:${requester}`))) {
+		return json({ error: 'Too many authorization attempts. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
+	}
+	let body: unknown;
+	try { body = await boundedJson(request, 4096); }
+	catch (err) { return error('Invalid JSON body', err instanceof BodyLimitError ? 413 : 400); }
+	if (!body || typeof body !== 'object' || Array.isArray(body)) return error('Body must be an object');
+	const rec = body as Record<string, unknown>;
+	const passcode = normalizePasscode(rec.passcode ?? rec.passphrase);
+	const retained = await paste.getRetainedPaste(env, id);
+	if (!retained || retained.moderation.visibility === 'deleted') return error('Paste not found', 404);
+	if (!await paste.pasteIndexStub(env).hasPasscode(id)) return error('This older paste has no passcode. Staff can delete it.', 403);
+	if (!passcode || !await paste.pasteIndexStub(env).verifyPasscode(id, passcode)) return error('Invalid passcode or passphrase', 403);
+	return json({ authorized: true, id });
 }
 
 async function handleListPastes(url: URL, env: Env): Promise<Response> {
@@ -1022,6 +1040,12 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 			return handleBundleFile(request, env, fileRoute[1]!.toUpperCase(), fileRoute[2]!);
 		}
 
+		const apiPasteAuthorize = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/authorize$/);
+		if (apiPasteAuthorize) {
+			if (method !== 'POST') return error('Method Not Allowed', 405);
+			return handleAuthorizePaste(request, env, apiPasteAuthorize[1]!.toUpperCase());
+		}
+
 		const apiPasteReport = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/report$/);
 		if (apiPasteReport) {
 			if (method !== "POST") return error("Method Not Allowed", 405);
@@ -1075,7 +1099,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 		if (path === "/app.js") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
 			if (env.ASSETS) {
-				return env.ASSETS.fetch(request);
+				return withAssetCachePolicy(request, await env.ASSETS.fetch(request));
 			}
 			return error("app.js not available", 404);
 		}
@@ -1106,7 +1130,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 		// Fall through to static assets (if any)
 		if (env.ASSETS && (method === "GET" || method === "HEAD")) {
 			const assetResp = await env.ASSETS.fetch(request);
-			if (assetResp.status !== 404) return assetResp;
+			if (assetResp.status !== 404) return withAssetCachePolicy(request, assetResp);
 		}
 
 		if (wantsHtml(request)) return ui.notFoundPage("Not found", Boolean(await admin.authenticateStaff(request, env)));

@@ -8,7 +8,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { isContentType, type ContentType } from "./content_type";
-import { sha256Hex, timingSafeEqualHex } from "./pow";
+import { randomHex, timingSafeEqualHex } from "./pow";
+import { normalizePasscode, PASSPHRASE_WORD_COUNT } from '../public/authorization.js';
 import { initialModeration, MODEL, PROMPT_VERSION, type JevAssessment } from "./jev.mjs";
 import { BASE_BYTES, sizeDifficultyBits, SHARING_LIMITS } from '../public/policy.js';
 import type { FileManifest } from './bundle';
@@ -23,8 +24,6 @@ export const RECENT_PASTE_LIMIT = 40;
 export const PUBLIC_PASTES_PAGE_SIZE = 50;
 /** Max chars stored/shown as a one-line preview. */
 export const PREVIEW_CHARS = 96;
-/** How long the creating client may delete its paste. */
-export const DELETION_TOKEN_TTL_MS = 10 * 60 * 1000;
 export const MAX_REPORT_EMAIL_CHARS = 320;
 
 export const REPORT_CATEGORIES = [
@@ -70,12 +69,7 @@ export type SharingAccess = {
 	reason: string;
 };
 
-export type PasteDeletionGrant = {
-	tokenHash: string;
-	expiresAt: number;
-};
-
-export type DeletePasteResult = "deleted" | "not_found" | "expired" | "invalid_token";
+export type DeletePasteResult = "deleted" | "not_found" | "unauthorized";
 
 export type PasteUploadMetadata = {
 	"cf-connecting-ip": string | null;
@@ -334,16 +328,9 @@ export async function putPaste(
 	env: Env,
 	meta: PasteMeta,
 	compressedBytes: Uint8Array,
-	deletionGrant: PasteDeletionGrant,
 	preview: string,
 	assessment: JevAssessment,
 ): Promise<void> {
-	if (!/^[0-9a-f]{64}$/.test(deletionGrant.tokenHash)) {
-		throw new Error("invalid deletion token hash");
-	}
-	if (!Number.isSafeInteger(deletionGrant.expiresAt) || deletionGrant.expiresAt <= Date.now()) {
-		throw new Error("invalid deletion token expiry");
-	}
 	const entry: RecentPaste = {
 		id: meta.id, byte_length: meta.byte_length, sha256: meta.sha256,
 		created_at: meta.created_at, region_id: meta.region_id, region: meta.region,
@@ -378,8 +365,6 @@ export async function putPaste(
 			// out of R2 avoids its 2 KiB custom-metadata limit and duplicate IPs.
 			metadata_source: 'index-v1',
 			unlisted: meta.unlisted ? 'true' : 'false',
-			deletion_token_hash: deletionGrant.tokenHash,
-			deletion_expires_at: String(deletionGrant.expiresAt),
 		},
 	});
 
@@ -526,27 +511,14 @@ export async function getPasteObject(env: Env, id: string): Promise<StoredPasteO
 	};
 }
 
-export async function deletePasteWithToken(
+export async function deleteAuthorizedPaste(
 	env: Env,
 	id: string,
-	token: string,
+	passcode: string,
 ): Promise<DeletePasteResult> {
-	if (!/^[0-9a-f]{64}$/.test(token)) return "invalid_token";
-
 	const object = await env.PASTES.head(pasteObjectKey(id));
 	if (!object) return "not_found";
-	const metadata = object.customMetadata ?? {};
-	const expiresAt = Number(metadata.deletion_expires_at);
-	if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return "invalid_token";
-	if (Date.now() >= expiresAt) return "expired";
-
-	const tokenHash = await sha256Hex(token);
-	if (
-		!/^[0-9a-f]{64}$/.test(metadata.deletion_token_hash ?? "") ||
-		!timingSafeEqualHex(tokenHash, metadata.deletion_token_hash)
-	) {
-		return "invalid_token";
-	}
+	if (!await pasteIndexStub(env).verifyPasscode(id, passcode)) return "unauthorized";
 
 	// Make the paste inaccessible and persist its origin metadata before removing
 	// the body. This way an R2 failure cannot accidentally expose content already
@@ -653,6 +625,9 @@ export class PasteIndex extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		ctx.blockConcurrencyWhile(async () => {
+		this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS paste_authorization (
+			paste_id TEXT PRIMARY KEY, passcode TEXT NOT NULL UNIQUE
+		)`);
 		this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS paste_rate_events (
 				paste_id TEXT PRIMARY KEY,
@@ -824,6 +799,32 @@ export class PasteIndex extends DurableObject<Env> {
 			`);
 		}
 		});
+	}
+
+	/** Codes never enter paste metadata or R2. The UNIQUE constraint also covers deleted pastes. */
+	createPasscode(id: string): string {
+		const pasteId = id.toUpperCase();
+		if (this.ctx.storage.sql.exec('SELECT paste_id FROM paste_authorization WHERE paste_id = ?', pasteId).toArray().length) {
+			throw new Error('Paste authorization already exists');
+		}
+		for (let attempt = 0; attempt < 10; attempt++) {
+			const passcode = randomHex(PASSPHRASE_WORD_COUNT);
+			const inserted = this.ctx.storage.sql.exec<{ passcode: string }>(
+				'INSERT OR IGNORE INTO paste_authorization (paste_id, passcode) VALUES (?, ?) RETURNING passcode', pasteId, passcode,
+			).toArray();
+			if (inserted.length) return passcode;
+		}
+		throw new Error('Could not generate unique paste authorization');
+	}
+
+	hasPasscode(id: string): boolean {
+		return this.ctx.storage.sql.exec('SELECT paste_id FROM paste_authorization WHERE paste_id = ?', id.toUpperCase()).toArray().length > 0;
+	}
+
+	verifyPasscode(id: string, value: string): boolean {
+		const passcode = normalizePasscode(value);
+		const row = this.ctx.storage.sql.exec<{ passcode: string }>('SELECT passcode FROM paste_authorization WHERE paste_id = ?', id.toUpperCase()).toArray()[0];
+		return Boolean(passcode && row && timingSafeEqualHex(passcode, row.passcode));
 	}
 
 	async record(

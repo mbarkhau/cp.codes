@@ -37,7 +37,7 @@ export default { async fetch(request, env, ctx) {
    unlisted: false, upload_metadata: { 'cf-connecting-ip': owner }, proof_of_work: null,
    ...(parsed ? { format: 'bundle-v1', primary: parsed.primary, files: await bundleManifest(parsed) } : {}) };
   const compressed = new Uint8Array(await new Response(new Response(bytes).body.pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
-  await paste.putPaste(env, metadata, compressed, { tokenHash: await sha256Hex('a'.repeat(64)), expiresAt: Date.now()+600000 }, 'fixture preview', assessment);
+  await paste.putPaste(env, metadata, compressed, 'fixture preview', assessment);
   return Response.json({ ok: true });
  }
  if (path === '/__admissions') {
@@ -198,19 +198,26 @@ test('paste views omit extra labels and only show file navigation for multiple f
 			const response = await fetch(path, { headers: { ...staff, accept: 'text/html' } });
 			assert.equal(response.status, 200);
 			const html = await response.text();
+			assert.doesNotMatch(html, /<dialog\b|qr-cache-restored/);
+			assert.match(html, /data-dialog-metadata="/);
+			const themePosition = html.indexOf('src="/theme.js?');
+			const stylePosition = html.indexOf('href="/style.css?');
+			assert.ok(themePosition < stylePosition && stylePosition < html.indexOf('rel="preload"'));
+			const firstKilobyte = Buffer.from(html).subarray(0, 1024).toString();
+			for (const [hint] of html.matchAll(/<link rel="(?:modulepreload|preload)"[^>]*>/g)) {
+				assert.ok(firstKilobyte.includes(hint), 'Paste view hints stay within the first kilobyte');
+			}
 			assert.doesNotMatch(html, /policy-note|sharing-banner|selected-file-info/);
-			const actions = html.match(/<nav class="paste-actions"[^>]*>([\s\S]*?)<\/nav>/)[1];
-			assert.deepEqual([...actions.matchAll(/\bid="([^"]+)"/g)].slice(0, 5).map(match => match[1]),
-				['copy-link', 'raw-paste', 'copy-paste', 'open-details', 'open-report']);
-			assert.match(actions, /class="icon-action report" type="button" id="open-report"/);
+			assert.doesNotMatch(html, /paste-toolbar|paste-actions|id="copy-link"|id="copy-paste"|id="open-report"/);
+			const rawUrl = path.startsWith('/admin/') ? `/admin/paste/${id}/raw` : `/${id}.${bundle ? 'md' : 'txt'}`;
+			assert.ok(html.includes(`data-raw-url="${rawUrl}"`));
 			assert.equal(html.includes('id="paste-file-nav"'), showNav, path);
 			if (showNav) {
 				assert.match(html, /id="paste-file-nav" role="tablist"/);
-				const toolbar = html.indexOf('class="paste-toolbar"');
 				const card = html.indexOf('class="card paste-card"');
 				const nav = html.indexOf('id="paste-file-nav"');
 				const content = html.indexOf('id="paste-content"');
-				assert.ok(toolbar < card && card < nav && nav < content);
+				assert.ok(card < nav && nav < content);
 			}
 		}
 	}

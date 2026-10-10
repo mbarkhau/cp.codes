@@ -1,5 +1,5 @@
 import { CONTENT_TYPE_LABELS, contentTypeForFilename, detectContentType } from './content_type.js?v=8';
-import { MAX_FILES, MAX_UPLOAD_BYTES } from './policy.js';
+import { MAX_FILES, MAX_UPLOAD_BYTES } from './policy.js?v=1';
 
 const mediaTypes = new Set(['png', 'jpeg', 'webp', 'gif', 'mp3', 'mp4']);
 const languagePackages = {
@@ -356,7 +356,7 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 			const contentType = resolveType(file, index);
 			let element;
 			if (contentType === 'markdown') {
-				const { markdownElement } = await import('./markdown.js?v=1');
+				const { markdownElement } = await import('./markdown.js?v=2');
 				const attachments = new Map(items().map((item) => [item.name, {
 					url: item.content, image: ['png', 'jpeg', 'webp', 'gif'].includes(item.content_type), link: `#file-${encodeURIComponent(item.name)}`,
 				}]));
