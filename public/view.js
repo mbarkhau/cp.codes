@@ -31,6 +31,55 @@ async function writeToClipboard(text) {
 	if (!copied) throw new Error("Clipboard access was denied");
 }
 
+function isCopyableImage(contentType) {
+	return ['png', 'jpeg', 'webp', 'gif'].includes(contentType);
+}
+
+function updatePasteCopyLabel(contentType) {
+	const button = document.getElementById('copy-paste');
+	if (!(button instanceof HTMLButtonElement)) return;
+	const image = isCopyableImage(contentType);
+	button.title = image ? 'Copy image as PNG' : 'Copy content';
+	button.setAttribute('aria-label', image ? 'Copy image' : 'Copy content');
+}
+
+async function imageClipboardBlob(content, contentType, image) {
+	// PNG can be copied directly, preserving its original resolution and transparency.
+	if (contentType === 'png') {
+		const match = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(content.trim());
+		if (!match) throw new Error('PNG image content is unavailable');
+		const bytes = Uint8Array.from(atob(match[1]), character => character.charCodeAt(0));
+		return new Blob([bytes], { type: 'image/png' });
+	}
+	if (!image?.naturalWidth || !image.naturalHeight) throw new Error('Image content is unavailable');
+	const canvas = document.createElement('canvas');
+	canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+	try {
+		const context = canvas.getContext('2d');
+		if (!context) throw new Error('Image conversion is unavailable in this browser');
+		context.drawImage(image, 0, 0);
+		return await new Promise((resolve, reject) => {
+			canvas.toBlob(blob => {
+				if (blob) resolve(blob);
+				else reject(new Error('Image could not be encoded for the clipboard'));
+			}, 'image/png');
+		});
+	} finally {
+		canvas.width = 0; canvas.height = 0;
+	}
+}
+
+async function writeImageToClipboard(content, contentType, image) {
+	if (typeof navigator.clipboard?.write !== 'function' || typeof ClipboardItem !== 'function' ||
+		(typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports('image/png'))) {
+		throw new Error('Image copying is unavailable in this browser. Save the image instead.');
+	}
+	// Start the clipboard write inside the click gesture, before asynchronous PNG encoding.
+	const png = imageClipboardBlob(content, contentType, image);
+	png.catch(() => {}); // A denied write may never consume the image promise.
+	await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+}
+
 async function sha256Hex(bytes) {
 	if (typeof globalThis.crypto?.subtle?.digest !== "function") {
 		throw new Error("This browser cannot verify the paste hash");
@@ -286,6 +335,50 @@ async function readPasteBytes(stream, maximum) {
 }
 
 let currentCopyContent = null;
+let currentCopyFile = null;
+let currentCopyType = null;
+
+function fileFragment(name) {
+	return `#file-${encodeURIComponent(name)}`;
+}
+
+function fileForFragment(files, fragment = location.hash) {
+	if (!fragment.startsWith('#file-')) return null;
+	try {
+		const name = decodeURIComponent(fragment.slice(6));
+		return files.find(file => file.name === name) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function pasteShareLink(id) {
+	return `${location.origin}/${id}${currentCopyFile === null ? '' : fileFragment(currentCopyFile)}`;
+}
+
+function initializePasteTabsLayout(nav) {
+	const measure = document.createElement('canvas').getContext('2d');
+	const update = () => {
+		if (!measure) { nav.classList.add('tabs-overflowing'); return; }
+		let requiredWidth = 0;
+		for (const button of nav.querySelectorAll('[role="tab"]')) {
+			const style = getComputedStyle(button);
+			const labelStyle = getComputedStyle(button.firstElementChild);
+			measure.font = style.font;
+			requiredWidth += measure.measureText(button.textContent).width +
+				parseFloat(labelStyle.paddingLeft) + parseFloat(labelStyle.paddingRight) +
+				parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+		}
+		nav.classList.toggle('tabs-overflowing', Math.ceil(requiredWidth) > nav.clientWidth);
+	};
+	update();
+	if (typeof ResizeObserver === 'function') {
+		const observer = new ResizeObserver(update);
+		observer.observe(nav);
+		addEventListener('pagehide', event => { if (!event.persisted) observer.disconnect(); }, { once: true });
+	} else addEventListener('resize', update);
+}
+
 async function renderBundle(container, host) {
 	const bundle = JSON.parse(container);
 	if (bundle.format !== 'bundle-v1' || !Array.isArray(bundle.files) || bundle.files.length > 16) throw new Error('Invalid bundle');
@@ -300,7 +393,7 @@ async function renderBundle(container, host) {
 			blob = new Blob([Uint8Array.from(atob(match[2]), c => c.charCodeAt(0))], { type: match[1] });
 		} else blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
 		const url = URL.createObjectURL(blob); urls.push(url);
-		attachments.set(file.name, { url, image });
+		attachments.set(file.name, { url, image, link: fileFragment(file.name) });
 	}
 	for (const section of document.querySelectorAll('.paste-file-metadata')) {
 		const attachment = attachments.get(section.dataset.fileName);
@@ -312,33 +405,74 @@ async function renderBundle(container, host) {
 		links.hidden = false;
 	}
 	addEventListener('pagehide', (event) => { if (!event.persisted) urls.forEach(url => URL.revokeObjectURL(url)); }, { once: true });
+	const primary = bundle.files.find(file => file.name === bundle.primary);
+	if (!primary) throw new Error('Primary file missing');
 	const nav = document.getElementById('paste-file-nav');
+	const tabs = [];
 	let selection = 0;
-	async function select(file) {
+	async function select(file, updateFragment = false) {
 		const version = ++selection;
 		const rendered = await renderPasteContent(file.content, file.content_type, attachments);
 		if (version !== selection) return;
-		host.replaceChildren(rendered); currentCopyContent = file.content;
-		for (const button of nav?.querySelectorAll('button') ?? []) button.setAttribute('aria-pressed', String(button.dataset.name === file.name));
-		const info = document.getElementById('selected-file-info');
-		if (info) info.textContent = `${file.name} · ${file.content_type}`;
+		host.replaceChildren(rendered);
+		currentCopyContent = file.content;
+		currentCopyFile = file.name;
+		currentCopyType = file.content_type;
+		updatePasteCopyLabel(currentCopyType);
+		for (const button of tabs) {
+			const selected = button.dataset.index === String(bundle.files.indexOf(file));
+			button.setAttribute('aria-selected', String(selected));
+			button.tabIndex = selected ? 0 : -1;
+			if (selected) host.setAttribute('aria-labelledby', button.id);
+		}
+		if (updateFragment) history.replaceState(history.state, '', fileFragment(file.name));
 		const raw = document.getElementById('raw-paste');
 		if (raw instanceof HTMLAnchorElement) {
 			raw.href = host.dataset.staffReview === 'true' ? attachments.get(file.name).url : `/${host.dataset.cpCode}/files/${encodeURIComponent(file.name)}`;
 			raw.title = `View raw content: ${file.name}`;
 			raw.setAttribute('aria-label', raw.title);
 		}
-		void import('./highlight.js?v=1').then(({ highlightPaste }) => highlightPaste(rendered)).catch(() => {});
+		void import('./highlight.js?v=2').then(({ highlightPaste }) => highlightPaste(rendered)).catch(() => {});
 	}
-	for (const file of bundle.files) {
-		const button = document.createElement('button'); button.type = 'button'; button.textContent = file.name; button.dataset.name = file.name;
-		button.addEventListener('click', () => { void select(file).catch(error => { const p = document.createElement('p'); p.textContent = error.message; host.replaceChildren(p); }); });
-		nav?.append(button);
+	const choose = (file, updateFragment = false) => {
+		void select(file, updateFragment).catch(error => {
+			const failure = document.createElement('p');
+			failure.className = 'paste-load-error'; failure.setAttribute('role', 'alert');
+			failure.textContent = error.message; host.replaceChildren(failure);
+		});
+	};
+	if (nav && bundle.files.length > 1) {
+		for (const [index, file] of bundle.files.entries()) {
+			const button = document.createElement('button');
+			button.type = 'button'; button.id = `paste-file-tab-${index}`;
+			button.title = file.name || 'Unnamed'; button.dataset.name = file.name; button.dataset.index = String(index);
+			button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', host.id);
+			button.setAttribute('aria-selected', 'false'); button.tabIndex = -1;
+			const label = document.createElement('span'); label.textContent = button.title; button.append(label);
+			button.addEventListener('click', () => choose(file, true));
+			nav.append(button); tabs.push(button);
+		}
+		host.setAttribute('role', 'tabpanel'); host.tabIndex = 0;
+		nav.hidden = false;
+		initializePasteTabsLayout(nav);
+		nav.addEventListener('keydown', event => {
+			let index = tabs.indexOf(event.target.closest?.('[role="tab"]'));
+			if (index < 0) return;
+			if (event.key === 'ArrowRight') index = (index + 1) % tabs.length;
+			else if (event.key === 'ArrowLeft') index = (index + tabs.length - 1) % tabs.length;
+			else if (event.key === 'Home') index = 0;
+			else if (event.key === 'End') index = tabs.length - 1;
+			else return;
+			event.preventDefault(); tabs[index].focus(); choose(bundle.files[index], true);
+		});
 	}
-	const primary = bundle.files.find(file => file.name === bundle.primary);
-	if (!primary) throw new Error('Primary file missing');
-	await select(primary);
-	return primary.content;
+	addEventListener('hashchange', () => {
+		const file = fileForFragment(bundle.files) ?? (!location.hash || location.hash.startsWith('#file-') ? primary : null);
+		if (file) choose(file);
+	});
+	const initial = fileForFragment(bundle.files) ?? primary;
+	await select(initial);
+	return initial.content;
 }
 
 async function initializePasteContent() {
@@ -395,14 +529,16 @@ async function initializePasteContent() {
 			if (copyButton instanceof HTMLButtonElement) copyButton.disabled = false;
 			return primaryContent;
 		}
-		currentCopyContent = content;
 		const rendered = await renderPasteContent(content, contentType);
 		host.replaceChildren(rendered);
+		currentCopyContent = content;
+		currentCopyType = contentType;
+		updatePasteCopyLabel(currentCopyType);
 		host.setAttribute("aria-busy", "false");
 		if (copyButton instanceof HTMLButtonElement) copyButton.disabled = false;
 		// Enhance after plaintext is visible; CDN availability must not block the viewer.
 		if (rendered.querySelector("code[class*='language-']")) {
-			void import("./highlight.js?v=1")
+			void import("./highlight.js?v=2")
 				.then(({ highlightPaste }) => highlightPaste(rendered))
 				.catch((error) => console.warn("Syntax highlighting unavailable", error));
 		}
@@ -454,11 +590,18 @@ function initializePasteCopy(contentPromise) {
 	button.addEventListener("click", async () => {
 		button.disabled = true;
 		try {
-			const initialContent = await contentPromise;
-			const content = currentCopyContent ?? initialContent;
-			if (typeof content !== "string") throw new Error("Paste content is unavailable");
-			await writeToClipboard(content);
-			showActionFeedback(status, 'Content copied.', 'ok');
+			if (isCopyableImage(currentCopyType)) {
+				if (typeof currentCopyContent !== 'string') throw new Error('Image content is unavailable');
+				const image = document.querySelector('#paste-content img.paste-image');
+				await writeImageToClipboard(currentCopyContent, currentCopyType, image);
+				showActionFeedback(status, 'Image copied.', 'ok');
+			} else {
+				const initialContent = await contentPromise;
+				const content = currentCopyContent ?? initialContent;
+				if (typeof content !== "string") throw new Error("Paste content is unavailable");
+				await writeToClipboard(content);
+				showActionFeedback(status, 'Content copied.', 'ok');
+			}
 		} catch (error) {
 			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
 		} finally {
@@ -619,7 +762,8 @@ document.getElementById('copy-link')?.addEventListener('click', async () => {
 	const id = document.getElementById('paste-content')?.dataset.cpCode;
 	if (!(status instanceof HTMLElement) || !id) return;
 	try {
-		await writeToClipboard(`${location.origin}/${id}`);
+		await pasteContentPromise;
+		await writeToClipboard(pasteShareLink(id));
 		showActionFeedback(status, 'Link copied.', 'ok');
 	} catch {
 		showActionFeedback(status, 'Clipboard unavailable; copy the address bar.', 'err');

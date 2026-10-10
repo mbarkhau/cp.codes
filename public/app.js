@@ -3,23 +3,23 @@
  * The nonce search is split across a Web Worker pool. Each worker uses native
  * Web Crypto when available and lazily loads hash-wasm as a fallback.
  */
-import { contentTypeForFilename, detectContentType } from "./content_type.js?v=7";
+import { contentTypeForFilename, detectContentType } from "./content_type.js?v=8";
 import { MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType } from "./media.js?v=1";
-import { createFileEditor } from './files.js?v=1';
-import { MAX_UPLOAD_BYTES, sizeDifficultyBits } from './policy.js';
+import { createFileEditor } from './files.js?v=31';
+import { MAX_UPLOAD_BYTES } from './policy.js';
 
 const contentEl = document.getElementById("content");
 const filenameEl = document.getElementById("filename");
+const editorsEl = document.getElementById('file-editors');
 const listedEl = document.getElementById("listed");
 const consentEl = document.getElementById("consent");
 const moderationConsentEl = document.getElementById("consent-moderation");
 const publishBtn = document.getElementById("publish");
 const statusEl = document.getElementById("status");
 const bytesEl = document.getElementById("bytes");
-const sizeDifficultyEl = document.getElementById("size-difficulty");
+const proofEstimateEl = document.getElementById("proof-estimate");
 const progressEl = document.getElementById("progress");
 const contentTypeEl = document.getElementById("content-type");
-const detectedTypeEl = document.getElementById("detected-type");
 const fileInputEl = document.getElementById("file-input");
 const fileButtonEl = document.getElementById("file-button");
 
@@ -83,69 +83,70 @@ function setStatus(text, kind = "") {
 }
 
 let isBusy = false;
-const fileListEl = document.getElementById('file-list');
-const fileEditor = typeof fileListEl?.replaceChildren === 'function' && typeof createFileEditor === 'function'
-	? createFileEditor({ content: contentEl, filename: filenameEl, type: contentTypeEl, list: fileListEl,
+const fileEditor = editorsEl && typeof createFileEditor === 'function'
+	? createFileEditor({ root: editorsEl, submit: () => { void publish(); },
 		changed: (error) => { updateBytes(); if (error) setStatus(error, 'err'); } }) : null;
 function addLoadedFile(name, text, type) { fileEditor?.add(name, text, type); }
 
 function updatePublishState() {
-	publishBtn.disabled = isBusy || !consentEl.checked || !moderationConsentEl.checked || contentEl.value.length === 0;
+	const hasContent = fileEditor ? fileEditor.hasContent() : (contentEl?.value.length ?? 0) > 0;
+	publishBtn.disabled = isBusy || !consentEl.checked || !moderationConsentEl.checked || !hasContent;
 }
 
 function setBusy(busy) {
 	isBusy = busy;
 	updatePublishState();
-	contentEl.disabled = busy;
-	filenameEl.disabled = busy;
+	contentEl && (contentEl.disabled = busy);
+	filenameEl && (filenameEl.disabled = busy);
+	fileEditor?.setEditable(!busy);
 	listedEl.disabled = busy;
 	consentEl.disabled = busy;
 	moderationConsentEl.disabled = busy;
-	contentTypeEl.disabled = busy;
+	if (contentTypeEl) contentTypeEl.disabled = busy;
 	fileInputEl.disabled = busy;
 	fileButtonEl.disabled = busy;
-	if (fileListEl) fileListEl.inert = busy;
 	const addText = document.getElementById('add-text');
 	if (addText) addText.disabled = busy;
-	const cancel = document.getElementById('cancel-publish');
-	if (cancel) cancel.hidden = !busy;
+	const previewButton = document.getElementById('preview-file');
+	if (previewButton) previewButton.disabled = busy;
 	progressEl.style.display = busy ? "block" : "none";
 	progressEl.setAttribute("aria-hidden", busy ? "false" : "true");
 }
 
+function currentDraft() {
+	return fileEditor?.primary() ?? { name: filenameEl?.value.trim() ?? '', content: contentEl?.value ?? '', content_type: 'plaintext' };
+}
+
 function updateDetection() {
-	const filename = filenameEl.value.trim();
-	const automaticType = filename
-		? contentTypeForFilename(filename)
-		: detectContentType(contentEl.value);
-	const type = contentTypeEl.value === "auto" ? automaticType : contentTypeEl.value;
-	const option = [...contentTypeEl.options].find((item) => item.value === type);
-	const label = option?.textContent ?? type;
-	const autoOption = [...contentTypeEl.options].find((item) => item.value === "auto");
-	if (autoOption) autoOption.textContent = `Auto detect (${label})`;
-	detectedTypeEl.textContent = contentTypeEl.value === "auto"
-		? `${filename ? "Filename" : "Detected"}: ${label}`
-		: `Using: ${label}`;
+	const draft = currentDraft();
+	const automaticType = draft.name ? contentTypeForFilename(draft.name) : detectContentType(draft.content ?? '');
+	const type = draft.content_type ?? (contentTypeEl?.value && contentTypeEl.value !== 'auto' ? contentTypeEl.value : automaticType);
 	return type;
 }
 
+function formatBytes(n) {
+	if (n < 1024) return `${n} ${n === 1 ? 'byte' : 'bytes'}`;
+	if (n < 1024 ** 2) return `${(n / 1024).toFixed(2)} KiB`;
+	return `${(n / 1024 ** 2).toFixed(2)} MiB`;
+}
+
 function updateBytes() {
-	const n = new TextEncoder().encode(fileEditor ? JSON.stringify(fileEditor.getBundle()) : contentEl.value).byteLength;
-	const extraDifficultyBits = typeof sizeDifficultyBits === 'function' && n > 0 && n <= MAX_UPLOAD_BYTES ? sizeDifficultyBits(n) : 0;
-	bytesEl.textContent = `${n.toLocaleString()} bytes`;
-	sizeDifficultyEl.textContent = extraDifficultyBits === 0
-		? 'Small upload · base work'
-		: `Estimated cost · ${2 ** extraDifficultyBits}× base work`;
+	const source = fileEditor ? fileEditor.serialized() : contentEl?.value ?? '';
+	const n = new TextEncoder().encode(source).byteLength;
+	bytesEl.textContent = formatBytes(n);
+	if (typeof scheduleProofEstimate === 'function') scheduleProofEstimate(n);
 	updateDetection();
 	updatePublishState();
 	return n;
 }
 
-contentEl.addEventListener("input", updateBytes);
-filenameEl.addEventListener("input", updateDetection);
-contentTypeEl.addEventListener("change", updateDetection);
+contentEl?.addEventListener("input", updateBytes);
+filenameEl?.addEventListener("input", updateDetection);
+contentTypeEl?.addEventListener("change", updateDetection);
 consentEl.addEventListener("change", updatePublishState);
 moderationConsentEl.addEventListener("change", updatePublishState);
+let proofEstimateSerial = 0;
+let proofEstimateTimer;
 updateBytes();
 updatePublishState();
 
@@ -218,8 +219,8 @@ async function loadFile(file) {
 		if (file.name.length <= filenameEl.maxLength) filenameEl.value = file.name;
 	}
 	const storedByteLength = updateBytes();
-	contentEl.focus();
-	contentEl.setSelectionRange(0, 0);
+	contentEl?.focus();
+	contentEl?.setSelectionRange(0, 0);
 	const detail = actualMediaType
 		? `${bytes.byteLength.toLocaleString()} media bytes; ${storedByteLength.toLocaleString()} data-URL bytes`
 		: `${storedByteLength.toLocaleString()} bytes`;
@@ -244,30 +245,31 @@ function dragHasFiles(event) {
 		(event.dataTransfer?.files?.length ?? 0) > 0;
 }
 
-contentEl.addEventListener("dragenter", (event) => {
-	if (!dragHasFiles(event) || contentEl.disabled) return;
+const dropTarget = document.getElementById('new') ?? contentEl;
+dropTarget?.addEventListener("dragenter", (event) => {
+	if (!dragHasFiles(event) || isBusy) return;
 	event.preventDefault();
-	contentEl.classList.add("file-drag-active");
+	dropTarget.classList.add("file-drag-active");
 });
-contentEl.addEventListener("dragover", (event) => {
-	if (!dragHasFiles(event) || contentEl.disabled) return;
+dropTarget?.addEventListener("dragover", (event) => {
+	if (!dragHasFiles(event) || isBusy) return;
 	event.preventDefault();
 	if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-	contentEl.classList.add("file-drag-active");
+	dropTarget.classList.add("file-drag-active");
 });
-contentEl.addEventListener("dragleave", () => {
-	contentEl.classList.remove("file-drag-active");
+dropTarget?.addEventListener("dragleave", () => {
+	dropTarget.classList.remove("file-drag-active");
 });
-contentEl.addEventListener("drop", (event) => {
-	if (!dragHasFiles(event) || contentEl.disabled) return;
+dropTarget?.addEventListener("drop", (event) => {
+	if (!dragHasFiles(event) || isBusy) return;
 	event.preventDefault();
-	contentEl.classList.remove("file-drag-active");
+	dropTarget.classList.remove("file-drag-active");
 	const files = event.dataTransfer?.files;
 	if (!files || files.length === 0) return;
 	void loadFiles(Array.from(files));
 });
 
-contentEl.addEventListener("paste", (event) => {
+dropTarget?.addEventListener("paste", (event) => {
 	let files = Array.from(event.clipboardData?.files ?? []);
 	if (files.length === 0) {
 		files = Array.from(event.clipboardData?.items ?? [])
@@ -321,6 +323,50 @@ function bytesToBase64(bytes) {
 	return btoa(parts.join(""));
 }
 
+const POW_RATE_KEY = 'cp.codes.pow-rate.v1';
+const DEFAULT_HASHES_PER_THREAD = 10_000;
+
+function proofWorkerCount() {
+	const cores = navigator.hardwareConcurrency || 4;
+	return Math.max(2, Math.min(cores, 16));
+}
+
+function hashesPerSecond() {
+	try {
+		const stored = JSON.parse(localStorage.getItem(POW_RATE_KEY) || 'null');
+		if (Number.isFinite(stored?.perThread) && stored.perThread > 0) return stored.perThread * proofWorkerCount();
+	} catch { /* Use the default until a search has been measured. */ }
+	return DEFAULT_HASHES_PER_THREAD * proofWorkerCount();
+}
+
+function rememberHashRate(attempts, elapsedMs, workers) {
+	if (!(attempts > 0) || !(elapsedMs > 0) || !(workers > 0)) return;
+	const perThread = attempts / (elapsedMs / 1000) / workers;
+	if (!Number.isFinite(perThread) || perThread <= 0) return;
+	try { localStorage.setItem(POW_RATE_KEY, JSON.stringify({ perThread, workers, updatedAt: Date.now() })); } catch { /* Storage is optional. */ }
+}
+
+function scheduleProofEstimate(byteLength) {
+	if (typeof HTMLElement !== 'function' || !(proofEstimateEl instanceof HTMLElement)) return;
+	clearTimeout(proofEstimateTimer);
+	proofEstimateTimer = setTimeout(() => { void refreshProofEstimate(byteLength); }, 200);
+}
+
+async function refreshProofEstimate(byteLength) {
+	const serial = ++proofEstimateSerial;
+	try {
+		const response = await fetch(`/api/pow?byte_length=${byteLength}`);
+		if (!response.ok) throw new Error('difficulty unavailable');
+		const quote = await response.json();
+		if (serial !== proofEstimateSerial || !Number.isFinite(quote.difficulty)) return;
+		const attempts = quote.difficulty <= 0 ? 1 : 2 ** quote.difficulty;
+		const ms = attempts / hashesPerSecond() * 1000;
+		proofEstimateEl.textContent = Number.isFinite(ms) ? `Estimated PoW time: ${formatPowDuration(ms, true)}` : 'estimating…';
+	} catch {
+		if (serial === proofEstimateSerial) proofEstimateEl.textContent = 'estimating…';
+	}
+}
+
 function formatPowDuration(ms, extendedUnits = false) {
 	if (!Number.isFinite(ms) || ms < 0) return "estimating…";
 	const units = [
@@ -370,7 +416,6 @@ function powProgressText({ workerCount, implementations, difficulty, attempts, p
  * Split the nonce range across a worker pool. Worker i searches
  * start + i, start + i + workerCount, ... so no two workers overlap.
  */
-let cancelProof;
 async function solvePow(challenge) {
 	const { challenge_id, nonce, content_hash, difficulty, algorithm, expected_attempts_p50 } = challenge;
 	if (typeof challenge.signature !== "string" || challenge.signature.length === 0) {
@@ -384,8 +429,7 @@ async function solvePow(challenge) {
 	}
 
 	const p50 = expected_attempts_p50 ?? Math.ceil(Math.LN2 * 2 ** difficulty);
-	const logicalCores = navigator.hardwareConcurrency || 4;
-	const workerCount = Math.max(2, Math.min(logicalCores, 16));
+	const workerCount = proofWorkerCount();
 	const attemptsByWorker = new Array(workerCount).fill(0);
 	const implementations = new Set();
 	const workers = [];
@@ -409,7 +453,6 @@ async function solvePow(challenge) {
 			stopWorkers();
 			reject(error);
 		};
-		cancelProof = () => fail(new Error('Upload cancelled. Your draft is still here.'));
 		const updateProgress = () => {
 			const attempts = totalAttempts();
 			const ms = performance.now() - t0;
@@ -442,6 +485,7 @@ async function solvePow(challenge) {
 						const ms = Math.round(elapsedMs);
 						settled = true;
 						stopWorkers();
+						rememberHashRate(attempts, elapsedMs, workerCount);
 						setStatus(powProgressText({ workerCount, implementations, difficulty, attempts, p50, elapsedMs, found: true }));
 						resolve({
 							solution: message.solution,
@@ -477,12 +521,16 @@ async function solvePow(challenge) {
 
 async function publish() {
 	if (isBusy || !consentEl.checked || !moderationConsentEl.checked) return;
-	const content = contentEl.value;
-	const filename = filenameEl.value.trim();
 	const unlisted = !listedEl.checked;
 	let bundle = null;
-	try { if (typeof fileEditor !== 'undefined' && fileEditor) bundle = fileEditor.validate(); }
-	catch (error) { setStatus(error.message, 'err'); return; }
+	let content = contentEl?.value ?? '';
+	let filename = filenameEl?.value.trim() ?? '';
+	try {
+		if (typeof fileEditor !== 'undefined' && fileEditor) {
+			const prepared = fileEditor.prepare();
+			bundle = prepared.bundle; content = prepared.content; filename = prepared.filename;
+		}
+	} catch (error) { setStatus(error.message, 'err'); return; }
 	const byteLength = updateBytes();
 	const contentType = updateDetection();
 	if (byteLength === 0) {
@@ -602,9 +650,8 @@ async function publish() {
 publishBtn.addEventListener("click", () => {
 	void publish();
 });
-document.getElementById('cancel-publish')?.addEventListener('click', () => cancelProof?.());
 
-contentEl.addEventListener("keydown", (ev) => {
+contentEl?.addEventListener("keydown", (ev) => {
 	if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
 		ev.preventDefault();
 		void publish();

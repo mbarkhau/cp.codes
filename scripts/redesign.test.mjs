@@ -184,6 +184,38 @@ test('real multi-file upload is one gzip container with immutable manifest and p
 	assert.equal((await fetch(`/${paste.id}/files/hello.js?download`, { headers })).headers.get('content-disposition'), "attachment; filename*=UTF-8''hello.js");
 });
 
+test('paste views omit extra labels and only show file navigation for multiple files', async () => {
+	const singleBundle = JSON.stringify({ format: 'bundle-v1', primary: 'readme.md', files: [
+		{ name: 'readme.md', content_type: 'markdown', content: '# Only file' },
+	] });
+	for (const [id, content, bundle, showNav] of [
+		['CP000130', 'Only file', false, false],
+		['CP000131', singleBundle, true, false],
+		['CP000132', textBundle(), true, true],
+	]) {
+		await seed(id, { content, bundle });
+		for (const path of [`/${id}`, `/admin/paste/${id}/view`]) {
+			const response = await fetch(path, { headers: { ...staff, accept: 'text/html' } });
+			assert.equal(response.status, 200);
+			const html = await response.text();
+			assert.doesNotMatch(html, /policy-note|sharing-banner|selected-file-info/);
+			const actions = html.match(/<nav class="paste-actions"[^>]*>([\s\S]*?)<\/nav>/)[1];
+			assert.deepEqual([...actions.matchAll(/\bid="([^"]+)"/g)].slice(0, 5).map(match => match[1]),
+				['copy-link', 'raw-paste', 'copy-paste', 'open-details', 'open-report']);
+			assert.match(actions, /class="icon-action report" type="button" id="open-report"/);
+			assert.equal(html.includes('id="paste-file-nav"'), showNav, path);
+			if (showNav) {
+				assert.match(html, /id="paste-file-nav" role="tablist"/);
+				const toolbar = html.indexOf('class="paste-toolbar"');
+				const card = html.indexOf('class="card paste-card"');
+				const nav = html.indexOf('id="paste-file-nav"');
+				const content = html.indexOf('id="paste-content"');
+				assert.ok(toolbar < card && card < nav && nav < content);
+			}
+		}
+	}
+});
+
 test('media bundle is held as a whole; staff can inspect all files and approve without a false AI claim', async () => {
 	const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7qkAAAAASUVORK5CYII=';
 	const content = JSON.stringify({ format: 'bundle-v1', primary: 'readme.md', files: [

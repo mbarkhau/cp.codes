@@ -344,7 +344,14 @@ metadata and a loading shell but no paste body. Browser JavaScript fetches the g
 object, decompresses it, verifies its uncompressed length and SHA-256 hash, and then
 renders plaintext/code, Markdown, PNG/JPEG/WebP/GIF images, MP3/MP4 players, or the URL warning for a URL
 that has not been approved. The viewer switches bundle files locally after a single
-verified download. Content is always re-fetched/reauthorized on a new visit; only
+verified download. Multiple files appear as tabs above the content; the selected
+filename stays readable while other tabs share the remaining width. Copied links
+include a `#file-<URL-encoded filename>` fragment to reopen the selected file.
+Copying an image writes PNG image data to the clipboard, not its base64 text;
+JPEG/WebP/GIF images are converted at their original resolution. GIF animation is
+not copied. Image copying requires browser support and clipboard permission;
+otherwise save the displayed image instead. Text copying is unchanged.
+Content is always re-fetched/reauthorized on a new visit; only
 QR images remain cached. This prevents stale content-cache authorization bypasses. JSON metadata exposes `content_url`,
 `content_encoding`, and both compressed and
 uncompressed lengths instead of embedding the plaintext content.

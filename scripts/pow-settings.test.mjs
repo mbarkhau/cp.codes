@@ -105,6 +105,16 @@ test("settings require authentication; both roles can read but only admins can w
 	assert.match(html, /type="submit" disabled/);
 });
 
+test('difficulty quote matches a challenge and does not consume issuance', async () => {
+	const quote = await fetch('/api/pow?byte_length=10240', { headers: { 'cf-connecting-ip': '192.0.2.99' } });
+	assert.equal(quote.status, 200);
+	const quoted = await quote.json();
+	const issued = await challenge(10240);
+	assert.equal(quoted.difficulty, issued.difficulty);
+	assert.equal(quoted.expected_attempts, 2 ** issued.difficulty);
+	assert.equal((await fetch('/api/pow?byte_length=-1')).status, 400);
+});
+
 test("default state, navigation, and effective challenge difficulty agree", async () => {
 	const state = await getState();
 	assert.equal(state.configured_default_bits, 7);

@@ -51,6 +51,13 @@ test("upload page displays separate unchecked consent controls", async () => {
 	assert.match(moderationConsent, /href="\/about#service-providers">service providers<\/a>/);
 	assert.doesNotMatch(moderationConsent, /DefAPI|TypeSafe/);
 	assert.match(html, /id="publish" disabled/);
+	assert.match(html, /id="listed" checked \/>/);
+	assert.match(html, /id="file-editors"[^>]*>\s*<article class="editor-card editor-placeholder" aria-hidden="true">/);
+	assert.match(html, /#file-editors, \.editor-placeholder \{ min-height: 320px; \}/);
+	assert.match(html, />Add file</);
+	assert.match(html, /\(max\. 8 MiB\)/);
+	assert.doesNotMatch(html, /file-sidebar|note\.md|id="content"|Make .* the main document/);
+
 });
 
 test("about page lists service providers and the data they process", async () => {
@@ -62,8 +69,34 @@ test("about page lists service providers and the data they process", async () =>
 		assert.ok(html.includes(`<strong>${name}</strong>`));
 	}
 	assert.match(html, /Paste text, filename, and content type/);
+	assert.match(html, /paste editor, Markdown rendering/);
 	assert.doesNotMatch(html, /id="description"|Description/);
 	assert.match(html, /Private IP\/location metadata and proof-of-work details are not sent/);
+});
+
+test("upload byte counter uses bytes, KiB and MiB without thousands separators", async () => {
+	const source = await readFile("public/app.js", "utf8");
+	const bytesEl = {};
+	const contentEl = { value: "" };
+	const context = vm.createContext({
+		TextEncoder, bytesEl, contentEl, fileEditor: null,
+		updateDetection() {}, updatePublishState() {},
+	});
+	vm.runInContext(source.slice(source.indexOf("function formatBytes"),
+		source.indexOf('contentEl?.addEventListener("input"')), context);
+	for (const [n, expected] of [
+		[0, "0 bytes"], [1, "1 byte"], [1023, "1023 bytes"],
+		[1024, "1.00 KiB"], [1536, "1.50 KiB"],
+		[1024 ** 2 - 1, "1024.00 KiB"], [1024 ** 2, "1.00 MiB"],
+		[1.5 * 1024 ** 2, "1.50 MiB"], [8 * 1024 ** 2, "8.00 MiB"],
+	]) {
+		contentEl.value = "a".repeat(n);
+		assert.equal(context.updateBytes(), n);
+		assert.equal(bytesEl.textContent, expected);
+	}
+	contentEl.value = "é".repeat(512);
+	assert.equal(context.updateBytes(), 1024);
+	assert.equal(bytesEl.textContent, "1.00 KiB");
 });
 
 test("browser requires both consents, locks both while busy, and submits both", async () => {

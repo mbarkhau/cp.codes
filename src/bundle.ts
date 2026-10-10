@@ -11,7 +11,7 @@ const media = new Set(['png', 'jpeg', 'webp', 'gif', 'mp3', 'mp4']);
 const mimes: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', mp3: 'audio/mpeg', mp4: 'video/mp4' };
 
 export function validFilename(name: unknown): name is string {
-	return typeof name === 'string' && name.isWellFormed() && name.length > 0 && name.length <= 128 &&
+	return typeof name === 'string' && name.isWellFormed() && name.length <= 128 &&
 		name !== '.' && name !== '..' && !/[\u0000-\u001f\u007f/\\?#%:]/.test(name) && name.trim() === name;
 }
 
@@ -22,14 +22,14 @@ export function parseBundle(content: string): Bundle {
 	const rec = value as Record<string, unknown>;
 	if (Object.keys(rec).length !== 3 || Object.keys(rec).some(key => !['format', 'primary', 'files'].includes(key))) throw new Error('Unexpected bundle fields');
 	if (rec.format !== 'bundle-v1' || !validFilename(rec.primary) || !Array.isArray(rec.files) ||
-		rec.files.length < 1 || rec.files.length > MAX_FILES) throw new Error(`A paste needs 1–${MAX_FILES} files and a primary filename`);
+		rec.files.length < 1 || rec.files.length > MAX_FILES) throw new Error(`A paste needs 1–${MAX_FILES} files`);
 	const names = new Set<string>();
 	const files = rec.files.map((file: unknown): BundleFile => {
 		if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error('Invalid file');
 		const item = file as Record<string, unknown>;
 		if (Object.keys(item).length !== 3 || Object.keys(item).some(key => !['name', 'content_type', 'content'].includes(key))) throw new Error('Unexpected file fields');
-		if (!validFilename(item.name) || names.has(item.name.toLowerCase())) throw new Error('Filenames must be unique, simple names without paths');
-		names.add(item.name.toLowerCase());
+		if (!validFilename(item.name) || (item.name !== '' && names.has(item.name.toLowerCase()))) throw new Error('Filenames must be unique, simple names without paths');
+		if (item.name !== '') names.add(item.name.toLowerCase());
 		if (!isContentType(item.content_type) || typeof item.content !== 'string') throw new Error('Invalid file type or content');
 		const result = validatePlaintext(item.content);
 		if (!result.ok) throw new Error(`${item.name}: ${result.error}`);

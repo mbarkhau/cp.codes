@@ -298,6 +298,40 @@ function debugPayload(
 	};
 }
 
+/** Current regional difficulty for a byte length. Does not issue or reserve a challenge. */
+async function uploadDifficulty(request: Request, env: Env, byteLength: number): Promise<number | null> {
+	const ip = clientIp(request);
+	if (!ip) return null;
+	const resolved = region.regionFromRequest(request);
+	const gate = pow.powKeyStub(env);
+	const [state, ipUnits, shortIds] = await Promise.all([
+		getPowDifficultyState(env),
+		gate.getAdmissionUnits(await pow.sha256Hex(ip)),
+		monoClock(env, resolved).shortIdCount(cpCode.TIME_RESOLUTION),
+	]);
+	const sizeBits = byteLength > 0 ? paste.pasteSizeDifficultyBits(byteLength) : 0;
+	return Math.min(
+		pow.MAX_POW_DIFFICULTY_BITS,
+		state.current_difficulty_bits + trafficDifficultyBits(ipUnits) + sizeBits +
+			shortIdDifficultyBits(shortIds, state.short_id_increment),
+	);
+}
+
+async function handlePowQuote(request: Request, env: Env): Promise<Response> {
+	const raw = new URL(request.url).searchParams.get('byte_length');
+	const byteLength = Number(raw);
+	if (raw === null || !/^[0-9]+$/.test(raw) || !Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > MAX_UPLOAD_BYTES) {
+		return error('byte_length must be an integer from 0 to the upload limit');
+	}
+	const difficulty = await uploadDifficulty(request, env, byteLength);
+	if (difficulty === null) return error('Trusted edge IP identity is unavailable. Check the service proxy configuration.', 403);
+	return json({
+		difficulty,
+		expected_attempts: difficulty <= 0 ? 1 : 2 ** difficulty,
+		expected_attempts_p50: pow.expectedAttemptsP50(difficulty),
+	});
+}
+
 async function handleChallenge(request: Request, env: Env): Promise<Response> {
 	let body: unknown;
 	try {
@@ -324,16 +358,8 @@ async function handleChallenge(request: Request, env: Env): Promise<Response> {
 	const gate = pow.powKeyStub(env);
 	if (!await gate.allowChallenge(requesterHash)) return json({ error: 'Too many challenges. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
 	if (!await gate.canAffordUpload(byteLength, requesterHash)) return json({ error: 'Upload cost budget reached. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
-	const resolved = region.regionFromRequest(request);
-	const [state, ipUnits, shortIds] = await Promise.all([
-		getPowDifficultyState(env), gate.getAdmissionUnits(requesterHash),
-		monoClock(env, resolved).shortIdCount(cpCode.TIME_RESOLUTION),
-	]);
-	const difficulty = Math.min(
-		pow.MAX_POW_DIFFICULTY_BITS,
-		state.current_difficulty_bits + trafficDifficultyBits(ipUnits) + paste.pasteSizeDifficultyBits(byteLength) +
-			shortIdDifficultyBits(shortIds, state.short_id_increment),
-	);
+	const difficulty = await uploadDifficulty(request, env, byteLength);
+	if (difficulty === null) return error('Trusted edge IP identity is unavailable. Check the service proxy configuration.', 403);
 	const challenge = await pow.issueChallenge(env, {
 		contentHash,
 		byteLength,
@@ -781,9 +807,7 @@ async function handleGetPaste(
 		}, 200, { "cache-control": "no-store" });
 	}
 
-	const sharing = await paste.pasteIndexStub(env).getSharing(id);
-	return ui.viewPage(stored, hitCount, Boolean(await admin.authenticateStaff(request, env)), moderation.visibility === "hidden",
-		moderation.decision === 'approved' ? 'approved' : sharing.escalated ? 'owner-review' : 'limited');
+	return ui.viewPage(stored, hitCount, Boolean(await admin.authenticateStaff(request, env)), moderation.visibility === "hidden");
 }
 
 /** Serve the exact R2 representation for client-side decompression. */
@@ -970,6 +994,11 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 			/^\/admin\/paste\/CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10})\/(?:view|raw|content)$/.test(path)
 		) {
 			return admin.handleAdminRequest(request, env, url, path);
+		}
+
+			if (path === "/api/pow") {
+			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
+			return handlePowQuote(request, env);
 		}
 
 		if (path === "/api/challenge") {

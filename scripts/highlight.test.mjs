@@ -73,7 +73,7 @@ test("loads pinned core and only requested grammars, once each", async () => {
 		"https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/lib/languages/python/+esm",
 	]);
 	assert.equal(h.styles.length, 1);
-	assert.equal(h.styles[0].href, "/highlight.css?v=1");
+	assert.equal(h.styles[0].href, "/highlight.css?v=2");
 	assert.ok(blocks.every((code) => code.classList.has("hljs")));
 	assert.equal(h.calls.length, 4);
 	assert.ok(h.calls.every((call) => call.ignoreIllegals === true));
@@ -117,7 +117,7 @@ test("paste viewer starts enhancement only after rendering and enabling copy", a
 	const viewer = await readFile(new URL("../public/view.js", import.meta.url), "utf8");
 	const displayIndex = viewer.indexOf("host.replaceChildren(rendered)");
 	const copyIndex = viewer.indexOf("copyButton.disabled = false", displayIndex);
-	const highlightIndex = viewer.indexOf('void import("./highlight.js?v=1")', displayIndex);
+	const highlightIndex = viewer.indexOf('void import("./highlight.js?v=2")', displayIndex);
 	assert.ok(displayIndex >= 0 && displayIndex < copyIndex && copyIndex < highlightIndex);
 	assert.match(viewer, /highlightPaste\(rendered\)/);
 });

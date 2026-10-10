@@ -1,3 +1,10 @@
+export const CONTENT_TYPE_LABELS = {
+	auto: 'Auto detect', plaintext: 'Plaintext', url: 'URL', markdown: 'Markdown',
+	png: 'PNG image', jpeg: 'JPEG image', webp: 'WebP image', gif: 'GIF image', mp3: 'MP3 audio', mp4: 'MP4 video',
+	javascript: 'JavaScript', typescript: 'TypeScript', python: 'Python', java: 'Java', json: 'JSON', html: 'HTML', css: 'CSS',
+	shell: 'Shell', sql: 'SQL', yaml: 'YAML', xml: 'XML', c: 'C', cpp: 'C++', csharp: 'C#', go: 'Go', rust: 'Rust', ruby: 'Ruby', php: 'PHP',
+};
+
 /** Resolve a supplied filename by its final extension, without inspecting content. */
 export function contentTypeForFilename(filename) {
 	const aliases = {

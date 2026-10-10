@@ -1,23 +1,5 @@
 /* Token colors only: preserve the viewer's existing spacing, font and background. */
-#paste-content {
-  --syntax-comment: #59636e;
-  --syntax-keyword: #cf222e;
-  --syntax-string: #0a3069;
-  --syntax-number: #0550ae;
-  --syntax-title: #6639ba;
-  --syntax-type: #953800;
-  --syntax-tag: #116329;
-}
-:root[data-theme="dark"] #paste-content {
-  --syntax-comment: #919ba5;
-  --syntax-keyword: #ff7b72;
-  --syntax-string: #a5d6ff;
-  --syntax-number: #79c0ff;
-  --syntax-title: #d2a8ff;
-  --syntax-type: #ffa657;
-  --syntax-tag: #7ee787;
-}
-#paste-content .hljs { color: var(--fg); }
+#paste-content .hljs { color: var(--content-fg); }
 #paste-content .hljs-comment,
 #paste-content .hljs-quote { color: var(--syntax-comment); }
 #paste-content .hljs-keyword,

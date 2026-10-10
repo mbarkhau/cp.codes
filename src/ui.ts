@@ -9,8 +9,55 @@ import {
 	MAX_REPORT_EMAIL_CHARS,
 	REPORT_CATEGORIES,
 } from "./paste";
-import { CONTENT_TYPES, CONTENT_TYPE_LABELS, fileExtension } from "./content_type";
+import { CONTENT_TYPE_LABELS, fileExtension } from "./content_type";
 import { POW_DEFAULTS } from "./pow";
+
+const EDITOR_PACKAGES: Record<string, string> = {
+	"@codemirror/autocomplete": "6.20.3/dist/index.js",
+	"@codemirror/commands": "6.11.1/dist/index.js",
+	"@codemirror/lang-cpp": "6.0.3/dist/index.js",
+	"@codemirror/lang-css": "6.3.1/dist/index.js",
+	"@codemirror/lang-go": "6.0.1/dist/index.js",
+	"@codemirror/lang-html": "6.4.12/dist/index.js",
+	"@codemirror/lang-java": "6.0.2/dist/index.js",
+	"@codemirror/lang-javascript": "6.2.5/dist/index.js",
+	"@codemirror/lang-json": "6.0.2/dist/index.js",
+	"@codemirror/lang-markdown": "6.5.2/dist/index.js",
+	"@codemirror/lang-php": "6.0.2/dist/index.js",
+	"@codemirror/lang-python": "6.2.1/dist/index.js",
+	"@codemirror/lang-rust": "6.0.2/dist/index.js",
+	"@codemirror/lang-sql": "6.10.0/dist/index.js",
+	"@codemirror/lang-xml": "6.1.0/dist/index.js",
+	"@codemirror/lang-yaml": "6.1.3/dist/index.js",
+	"@codemirror/language": "6.13.1/dist/index.js",
+	"@codemirror/lint": "6.9.7/dist/index.js",
+	"@codemirror/state": "6.7.6/dist/index.js",
+	"@codemirror/streamparser": "6.0.0/dist/index.js",
+	"@codemirror/view": "6.43.14/dist/index.js",
+	"@lezer/common": "1.5.3/dist/index.js",
+	"@lezer/cpp": "1.1.6/dist/index.js",
+	"@lezer/css": "1.3.9/dist/index.js",
+	"@lezer/go": "1.0.1/dist/index.js",
+	"@lezer/highlight": "1.2.5/dist/index.js",
+	"@lezer/html": "1.3.13/dist/index.js",
+	"@lezer/java": "1.1.5/dist/index.js",
+	"@lezer/javascript": "1.5.6/dist/index.js",
+	"@lezer/json": "1.0.3/dist/index.js",
+	"@lezer/lr": "1.4.11/dist/index.js",
+	"@lezer/markdown": "1.8.0/dist/index.js",
+	"@lezer/php": "1.0.6/dist/index.js",
+	"@lezer/python": "1.1.19/dist/index.js",
+	"@lezer/rust": "1.0.3/dist/index.js",
+	"@lezer/xml": "1.0.6/dist/index.js",
+	"@lezer/yaml": "1.0.4/dist/index.js",
+	"@marijn/find-cluster-break": "1.0.4/src/index.js",
+	crelt: "1.0.7/index.js",
+	"style-mod": "4.1.4/src/style-mod.js",
+	"w3c-keyname": "2.2.8/index.js",
+};
+const EDITOR_IMPORT_MAP = JSON.stringify({
+	imports: Object.fromEntries(Object.entries(EDITOR_PACKAGES).map(([name, path]) => [name, `https://cdn.jsdelivr.net/npm/${name}@${path}`])),
+});
 
 function escapeHtml(s: string): string {
 	return s
@@ -24,29 +71,42 @@ function escapeHtml(s: string): string {
 const SHELL_STYLE = `
 :root {
   color-scheme: light;
-  --bg: #f4f7fb;
-  --fg: #17243b;
+  /* Primary content has the strongest contrast; surfaces soften outward. */
+  --bg: #e8edf3;
+  --fg: #263449;
   --muted: #596980;
-  --card: #ffffff;
-  --surface: #f8f8f7;
+  --card: #f2f5f8;
+  --surface: #f8fafc;
+  --content-bg: #ffffff;
+  --content-fg: #000000;
   --border: #d1dbe8;
   --accent: #2458cf;
   --accent-hover: #1743a3;
   --accent-contrast: #ffffff;
   --focus: #3f3f3f;
   --danger: #a52c43;
+  --report-hover: #9b4f59;
   --success: #1e715b;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.07);
+  --shadow: 1px 1px 10px rgba(100, 100, 100, 0.5);
+  --syntax-comment: #59636e;
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-number: #0550ae;
+  --syntax-title: #6639ba;
+  --syntax-type: #953800;
+  --syntax-tag: #116329;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #101927;
-  --fg: #e6edf8;
+  --bg: #1b2431;
+  --fg: #ccd5e2;
   --muted: #a0b2cd;
-  --card: #182437;
-  --surface: #121e30;
+  --card: #111a26;
+  --surface: #080f18;
+  --content-bg: #000000;
+  --content-fg: #ffffff;
   --border: #344864;
   --accent: #a2bfff;
   --accent-hover: #c6d8ff;
@@ -54,7 +114,14 @@ const SHELL_STYLE = `
   --focus: #a9a9a4;
   --danger: #c1aaa8;
   --success: #acb9b0;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.24), 0 12px 32px rgb(0 0 0 / 0.2);
+  --shadow: 1px 1px 10px rgba(100, 100, 100, 0.5);
+  --syntax-comment: #919ba5;
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-number: #79c0ff;
+  --syntax-title: #d2a8ff;
+  --syntax-type: #ffa657;
+  --syntax-tag: #7ee787;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
@@ -113,7 +180,7 @@ header { display: flex; align-items: center; min-height: 2.5rem; margin-bottom: 
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 4px;
   padding: 1.35rem;
   box-shadow: var(--shadow);
 }
@@ -145,7 +212,7 @@ select, input[type="text"], input[type="email"], input[type="password"] {
   background: var(--surface);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 4px;
   padding: 0.55rem 0.7rem;
 }
 input[type="text"], input[type="email"], input[type="password"] { width: 100%; }
@@ -164,16 +231,16 @@ textarea {
   width: 100%;
   min-height: 18rem;
   resize: vertical;
-  background: var(--surface);
-  color: var(--fg);
+  background: var(--content-bg);
+  color: var(--content-fg);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 4px;
   padding: 0.9rem 1rem;
   font-family: var(--mono);
   font-size: 0.92rem;
   line-height: 1.45;
 }
-textarea.file-drag-active {
+textarea.file-drag-active, #new.file-drag-active {
   border-color: var(--focus);
   outline: 2px solid color-mix(in srgb, var(--focus) 75%, transparent);
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
@@ -198,7 +265,7 @@ textarea.file-drag-active {
 .consent-control { margin: 0; }
 .type-control { display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center; }
 .type-control label { margin: 0; }
-.check-control { display: flex; gap: 0.4rem; align-items: flex-start; color: var(--fg); cursor: pointer; }
+.check-control { display: flex; gap: 0.4rem; align-items: flex-start; margin: 0; color: var(--fg); cursor: pointer; }
 .check-control input {
   flex: 0 0 auto;
   margin: 0.25em 0 0;
@@ -236,7 +303,7 @@ button, .btn {
   border: 1px solid var(--accent);
   background: var(--accent);
   color: var(--accent-contrast);
-  border-radius: 7px;
+  border-radius: 4px;
   padding: 0.65rem 1.1rem;
   font-weight: 650;
   cursor: pointer;
@@ -282,6 +349,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .notes ul { padding-left: 1.2rem; }
 .paste-head { margin-bottom: 1rem; }
 .paste-card { position: relative; min-height: 5rem; }
+#paste-content { background: var(--content-bg); color: var(--content-fg); }
 .paste-loading { margin: 0; padding: 1.25rem; color: var(--muted); }
 .paste-load-error { margin: 0; padding: 1.25rem; color: var(--danger); white-space: pre-wrap; }
 .paste-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; align-items: center; margin-top: 1rem; }
@@ -298,7 +366,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .action-feedback.is-fading { transition: none; } }
 .icon-action {
   display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; padding: 0;
-  border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--muted);
   text-decoration: none; flex: 0 0 auto;
 }
 .icon-action svg { width: 1.2rem; height: 1.2rem; }
@@ -306,8 +374,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .icon-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .icon-action.danger { color: var(--danger); background: var(--surface); border-color: var(--border); }
 .icon-action.danger:hover:not(:disabled) { color: var(--danger); background: var(--card); border-color: var(--danger); filter: none; }
+.icon-action.report:hover:not(:disabled) { color: #fff; background: var(--report-hover); border-color: var(--report-hover); filter: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-.paste-dialog { color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; width: min(58rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; box-shadow: var(--shadow); }
+.paste-dialog { color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1.25rem; width: min(58rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; box-shadow: var(--shadow); }
 .paste-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
 .paste-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .paste-dialog-head h2 { margin: 0; font-size: 1.2rem; }
@@ -347,7 +416,7 @@ button.danger:hover:not(:disabled) { border-color: var(--danger); background: va
   --qr-pad: 12px;
   background: #fff;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 4px;
   padding: var(--qr-pad);
   justify-self: start;
   line-height: 0;
@@ -379,9 +448,10 @@ pre.paste {
   margin: 0;
   padding: 1rem 1.1rem;
   overflow: auto;
-  background: var(--surface);
+  background: var(--content-bg);
+  color: var(--content-fg);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 4px;
   font-family: var(--mono);
   font-size: 0.9rem;
   white-space: pre-wrap;
@@ -422,10 +492,10 @@ pre.paste {
 .report-panel .status { grid-column: 1 / -1; position: relative; height: 2.75rem; margin: 0; }
 .report-panel .status > span { position: absolute; inset: 0; overflow: auto; }
 @media (max-width: 640px) { .report-panel form { grid-template-columns: 1fr; } }
-.markdown-body { padding: 1rem 1.25rem; overflow-wrap: anywhere; }
+.markdown-body { padding: 1rem 1.25rem; overflow-wrap: anywhere; background: var(--content-bg); color: var(--content-fg); }
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
-.markdown-body pre { overflow: auto; padding: 0.85rem; border-radius: 6px; background: var(--surface); }
+.markdown-body pre { overflow: auto; padding: 0.85rem; border-radius: 4px; background: var(--surface); }
 .markdown-body code { font-family: var(--mono); }
 .markdown-body :not(pre) > code { padding: 0.1rem 0.3rem; border-radius: 4px; background: var(--surface); }
 .markdown-body img { max-width: 100%; }
@@ -435,9 +505,9 @@ pre.paste {
 .url-value { margin: 1rem 0; overflow-wrap: anywhere; font-family: var(--mono); }
 .url-activate { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0; color: var(--fg); cursor: pointer; }
 .url-activate input { accent-color: var(--accent); }
-.paste-image-wrap { padding: 1rem; text-align: center; background: var(--surface); }
+.paste-image-wrap { padding: 1rem; text-align: center; background: var(--content-bg); }
 .paste-image { display: block; max-width: 100%; max-height: 75vh; margin: 0 auto; }
-.paste-media-wrap { padding: 1rem; background: var(--surface); }
+.paste-media-wrap { padding: 1rem; background: var(--content-bg); }
 .paste-media { display: block; width: 100%; max-height: 75vh; margin: 0 auto; }
 @media (max-width: 720px) {
   .paste-details { grid-template-columns: minmax(0, 1fr); }
@@ -447,26 +517,66 @@ pre.paste {
 .hero .eyebrow { color: var(--accent); font: 650 .75rem var(--mono); letter-spacing: .12em; text-transform: uppercase; }
 .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); letter-spacing: -.05em; margin: .4rem 0 .75rem; }
 .hero p { color: var(--muted); margin: .5rem 0; }
-.composer-layout { display: grid; grid-template-columns: 15rem minmax(0,1fr); gap: 1.25rem; }
-.file-sidebar { align-self: start; padding: 1rem; }
-.file-sidebar h2 { margin: 0 0 1rem; font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
-.file-row { display: flex; gap: .2rem; margin-bottom: .5rem; align-items: center; }
-.file-row button { padding: .45rem .35rem; font-size: .75rem; border: 0; background: transparent; color: var(--muted); }
-.file-row .file-tab { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); }
-.file-row .file-tab[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb,var(--accent) 10%,var(--card)); }
-.file-row button:hover { color: var(--fg); background: var(--surface); }
-.file-sidebar > button { width: 100%; margin-top: .5rem; }
-.policy-note { padding: 1rem; background: color-mix(in srgb,var(--accent) 6%,var(--card)); border: 1px solid var(--border); border-radius: 8px; font-size: .85rem; }
-.policy-note p { margin: .35rem 0; }
+#file-editors, .editor-placeholder { min-height: 320px; }
+.editor-placeholder .editor-toolbar { min-height: calc(32px + 1.1rem + 1px); }
+.editor-card { border: 1px solid var(--border); border-radius: 4px; background: var(--surface); overflow: hidden; }
+.editor-card + .editor-card { margin-top: .85rem; }
+.editor-toolbar { --editor-control: 32px; display: flex; gap: .5rem; align-items: center; padding: .55rem; border-bottom: 1px solid var(--border); background: var(--surface); }
+.editor-name { display: flex; flex: 1 1 16rem; gap: .5rem; min-width: 0; align-items: center; }
+.editor-options { display: flex; align-items: center; gap: .5rem; margin-left: auto; }
+.editor-toolbar .editor-filename,
+.editor-toolbar .editor-type,
+.editor-toolbar .editor-toggle,
+.editor-toolbar button.editor-remove {
+  box-sizing: border-box; height: var(--editor-control); min-height: var(--editor-control); margin: 0;
+  border-width: 1px; border-style: solid; border-radius: 4px; font-size: .875rem; line-height: calc(var(--editor-control) - 2px);
+}
+.editor-toolbar .editor-filename { flex: 1 1 8rem; min-width: 0; padding: 0 .7rem; }
+.editor-toolbar .editor-type { flex: 0 0 10.5rem; width: 10.5rem; padding: 0 1.6rem 0 .7rem; }
+.editor-toolbar .editor-toggle,
+.editor-toolbar button.editor-remove {
+  display: inline-flex; align-items: center; justify-content: center; width: var(--editor-control); min-width: var(--editor-control); padding: 0; line-height: 0;
+}
+.editor-toolbar svg { stroke-linecap: butt; stroke-linejoin: miter; }
+.editor-toolbar .editor-toggle svg,
+.editor-toolbar button.editor-remove svg { display: block; flex: none; }
+.editor-toolbar .editor-toggle svg { width: 20px; height: 20px; }
+.editor-toolbar button.editor-remove svg { width: 24px; height: 24px; }
+#preview-file { background: var(--surface); color: var(--fg); border-color: var(--border); }
+#preview-file:hover:not(:disabled), #preview-file[aria-pressed="true"] { background: var(--card); color: var(--fg); border-color: var(--focus); }
+button.editor-remove { color: var(--danger); background: transparent; border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+button.editor-remove:hover:not(:disabled) { color: #fff; background: var(--danger); border-color: var(--danger); }
+button.editor-remove svg { color: currentColor; }
+.editor-mount, .editor-fallback, .cm-editor { min-height: 16rem; }
+.editor-mount { padding: 3px; background: var(--content-bg); color: var(--content-fg); }
+.editor-card .cm-editor.cm-focused { outline: 2px solid var(--focus); outline-offset: 2px; }
+.editor-card .cm-content { caret-color: var(--content-fg); }
+.editor-card .cm-editor.cm-focused .cm-cursor, .editor-card .cm-editor.cm-focused .cm-dropCursor { border-left: 2px solid var(--content-fg); }
+.editor-card .cm-gutters, .editor-card .cm-gutter, .editor-card .cm-activeLineGutter { background: var(--content-bg); color: var(--muted); border: 0; }
+.editor-card .cm-lineNumbers, .editor-card .cm-lineNumbers .cm-gutterElement { min-width: 3ch; text-align: right; }
+.editor-fallback { display: block; width: 100%; border: 0; border-radius: 0; resize: vertical; }
+.editor-preview { width: 100%; margin-top: .85rem; padding: .85rem 0 0; border-top: 1px solid var(--border); }
+.composer-actions { display: flex; justify-content: space-between; gap: .75rem; align-items: center; margin-top: .85rem; }
+.composer-actions > div { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 #upload-result { margin-top: 1.25rem; border-color: var(--accent); }
 #upload-result[hidden], [hidden] { display: none !important; }
 .share-link { font: 600 1.1rem var(--mono); overflow-wrap: anywhere; }
 .btn { display: inline-block; text-decoration: none; }
-.paste-file-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
-.paste-file-nav button { background: var(--surface); color: var(--fg); border-color: var(--border); font: .85rem var(--mono); }
-.paste-file-nav button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
-.sharing-banner { margin: 1rem 0; }
-@media(max-width:760px) { .composer-layout { grid-template-columns: 1fr; } .file-sidebar { padding: .85rem; } #file-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(12rem,1fr)); gap: .4rem; } }
+.paste-file-nav { display: flex; margin: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.paste-file-nav button {
+  flex: 1 1 auto; min-width: 0; margin: 0; padding: .65rem 0; overflow: hidden;
+  border: 0; border-top: 2px solid transparent; border-right: 1px solid var(--border); border-radius: 0;
+  background: transparent; color: var(--muted); font: .85rem var(--mono);
+}
+.paste-file-nav button:last-child { border-right: 0; }
+.paste-file-nav button > span { display: block; padding: 0 .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paste-file-nav button:hover { background: var(--card); color: var(--fg); border-color: var(--border); }
+.paste-file-nav.tabs-overflowing button { flex: 1 1 0; }
+.paste-file-nav button[aria-selected="true"] { background: var(--content-bg); color: var(--content-fg); border-top-color: var(--accent); }
+.paste-file-nav.tabs-overflowing button[aria-selected="true"] { flex: 0 1 auto; }
+.paste-file-nav button[aria-selected="true"] > span { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.paste-file-nav button:focus-visible { outline-offset: -3px; }
+@media(max-width:760px) { .editor-toolbar { align-items: stretch; flex-wrap: wrap; } .editor-options { margin-left: 0; } }
 @media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
 .footer { margin: 2.25rem 0 0; padding: 1.25rem 0 0 1.15rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.78rem; }
 .recent { margin-top: 1.75rem; }
@@ -479,13 +589,13 @@ pre.paste {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.recent-list { list-style: none; margin: 0; padding: 0; }
+.recent-list { list-style: none; margin: 0; padding: 0; border-radius: 4px; background: var(--content-bg); color: var(--content-fg); }
 .recent-list li {
   display: grid;
   grid-template-columns: 7.5rem 4.5rem 1fr auto;
   gap: 0.75rem 1rem;
   align-items: baseline;
-  padding: 0.7rem 0;
+  padding: 0.7rem 0.75rem;
   border-top: 1px solid var(--border);
 }
 .recent-list li:last-child { border-bottom: 1px solid var(--border); }
@@ -500,7 +610,7 @@ pre.paste {
 .recent-preview {
   font-family: var(--mono);
   font-size: 0.82rem;
-  color: var(--muted);
+  color: var(--content-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -514,7 +624,7 @@ pre.paste {
 }
 .recent-empty { color: var(--muted); font-size: 0.9rem; margin: 0; }
 .paste-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1rem; margin: 1.5rem 0; }
-.paste-pagination a { padding: .5rem .75rem; border: 1px solid var(--border); border-radius: 6px; text-decoration: none; }
+.paste-pagination a { padding: .5rem .75rem; border: 1px solid var(--border); border-radius: 4px; text-decoration: none; }
 .paste-pagination [aria-disabled] { color: var(--muted); }
 @media (max-width: 640px) {
   .wrap { padding: 1rem 1rem 3rem; }
@@ -700,46 +810,31 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
 	const p50 = Math.ceil(Math.LN2 * 2 ** d);
 	const average = 2 ** d;
 	const newSection = `
-<div class="composer-layout">
-<aside class="card file-sidebar"><h2>Your files</h2><div id="file-list" aria-label="Files in this paste"></div><button class="file-button" type="button" id="add-text">+ New text file</button><p class="meta">Up to 16 files · 8 MiB total</p><p class="meta">★ Main is the document people see first. Reference siblings in Markdown: <code>![diagram](diagram.png)</code></p></aside>
 <section class="card" id="new">
-  <div class="paste-fields">
-    <div>
-      <label for="filename">Selected file name</label>
-      <input type="text" id="filename" maxlength="128" placeholder="example.py" spellcheck="false" />
-    </div>
+  <div id="file-editors" aria-label="Paste files">
+    <article class="editor-card editor-placeholder" aria-hidden="true">
+      <div class="editor-toolbar"></div>
+      <div class="editor-mount"></div>
+    </article>
   </div>
-  <div class="content-heading">
-    <label for="content">Content</label>
+  <div class="composer-actions">
     <div>
+      <button class="file-button" type="button" id="add-text">Add file</button>
       <input class="file-input" type="file" id="file-input" multiple />
-      <button class="file-button" type="button" id="preview-file" aria-pressed="false" aria-controls="draft-preview">Preview</button>
-      <button class="file-button" type="button" id="file-button" aria-controls="file-input">+ Add files</button>
-    </div>
-  </div>
-  <textarea id="content" aria-label="Selected file content" placeholder="Write or paste your document here. Drop multiple files to add them to this paste…" spellcheck="false"></textarea>
-  <p class="policy-note" id="media-selected" hidden>Media file added. It will be included with this paste, but needs human review before sharing. Select a text file to keep writing.</p>
-  <div class="card" id="draft-preview" hidden></div>
-  <div class="row-publish">
-    <span class="meta"><span id="bytes">0 bytes</span> · <span id="size-difficulty">Base-size PoW</span> · <span id="detected-type">Detected: Plaintext</span></span>
-    <div class="type-control">
-      <label for="content-type">Type</label>
-      <select id="content-type">
-        <option value="auto">Auto detect</option>
-        ${CONTENT_TYPES.map((type) => `<option value="${type}">${escapeHtml(CONTENT_TYPE_LABELS[type])}</option>`).join("\n        ")}
-      </select>
+      <button class="file-button" type="button" id="file-button" aria-controls="file-input">Upload</button>
     </div>
   </div>
   <div class="consent-publish">
-    <label class="check-control"><input type="checkbox" id="listed" /><span>List publicly after human approval. Off by default; anyone with the link may request access within the sharing limits.</span></label>
+    <label class="check-control"><input type="checkbox" id="listed" checked /><span>List publicly on <a href="/pastes">cp.codes/pastes</a>. All pastes are public and can be accessed to anyone who has (or can guess) its link.</span></label>
     <label class="check-control consent-control"><input type="checkbox" id="consent" /><span>I consent to the collection and storage of <a href="/client-info">my IP and location data</a>.</span></label>
     <label class="check-control consent-control"><input type="checkbox" id="consent-moderation" /><span>I consent to sending paste data to <a href="/about#service-providers">service providers</a> for automated moderation. Uncertain content and media need human review before access.</span></label>
-    <div class="row"><button type="button" id="publish" disabled>Create share link</button><button class="file-button" type="button" id="cancel-publish" hidden>Cancel proof search</button><span class="meta">⌘ / Ctrl + Enter</span></div>
+    <div class="row"><button type="button" id="publish" disabled>Publish</button><button type="button" id="preview-file" aria-pressed="false">Preview</button></div>
+    <p class="meta"><span id="bytes">0 bytes</span> (max. 8 MiB) · <span id="proof-estimate">estimating…</span></p>
+    <div id="draft-preview" class="editor-preview" hidden></div>
   </div>
   <div class="progress" id="progress" aria-hidden="true"><i></i></div>
   <div class="status" id="status" role="status" aria-live="polite"></div>
-  <div class="policy-note"><strong>Designed for small-circle sharing</strong><p>Clearly innocuous text is immediately available to you and three other IPs. More traffic or a larger audience queues human review. IPs identify connections, not individual people.</p><p>Images, audio, and video are supported, but Jev cannot assess them: media pastes wait for human review.</p></div>
-</section></div>
+</section>
 <section class="card" id="upload-result" tabindex="-1" hidden aria-live="polite"></section>`;
 	const aboutSection = `
 <section class="notes${page === "about" ? " about-page" : ""}" id="about">
@@ -758,7 +853,7 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
     <li><strong>Cloudflare</strong> hosts cp.codes and stores pastes and upload metadata, including IP and location data.</li>
     <li><strong>DefAPI</strong> provides the API used for automated moderation. Paste text, filename, and content type are sent to this service.</li>
     <li><strong>TypeSafe</strong> supplies the Jev model used for automated moderation through DefAPI.</li>
-    <li><strong>jsDelivr</strong> serves browser libraries for Markdown rendering and fallback proof-of-work hashing. When loading these libraries, your browser sends IP and request metadata to the CDN, not paste contents.</li>
+    <li><strong>jsDelivr</strong> serves browser libraries for the paste editor, Markdown rendering, and fallback proof-of-work hashing. When loading these libraries, your browser sends IP and request metadata to the CDN, not paste contents.</li>
   </ul>
   <p>Private IP/location metadata and proof-of-work details are not sent to the automated moderation service.</p>
 </section>`;
@@ -773,7 +868,8 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
 		new: "New paste — cp.codes",
 	};
 	const script = page === "new"
-		? `<script type="module" src="/app.js?v=22"></script>`
+		? `<script type="importmap">${EDITOR_IMPORT_MAP}</script>
+<script type="module" src="/app.js?v=54"></script>`
 		: undefined;
 	const html = layout(titles[page], body, script, page, { showStaffNavigation });
 	return new Response(html, {
@@ -822,11 +918,11 @@ ${rows}
 
 function pasteIcon(name: "raw" | "copy" | "delete" | "report" | "link" | "details" | "close" | "download"): string {
 	const shapes = {
-		raw: '<path d="m8 5-7 7 7 7m8-14 7 7-7 7m-2-17-4 20"/>',
-		copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+		raw: '<path d="M 7 6 L 2 12 L 7 18 M 17 6 L 22 12 L 17 18 M 14 4 L 10 20"/>',
+		copy: '<path d="M 8 4 H 6 A 2 2 0 0 0 4 6 V 19 A 2 2 0 0 0 6 21 H 8 M 14 4 H 16 A 2 2 0 0 1 18 6 V 7 M 8 2 H 14 V 6 H 8 Z M 13 12 H 17 M 13 15 H 17 M 13 18 H 16 M 10 9 H 20 V 21 H 10 Z"/>',
 		delete: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
 		report: '<path d="M5 21V3m0 1h14l-3 4 3 4H5"/>',
-		link: '<path d="m10 13 4-4m-6 7-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 1 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
+		link: '<path d="M 16 12 L 7 12 M 9 16 L 8 17 A 4 4 0 0 1 2 11 L 6 7 A 4 4 0 0 1 12 7 M 14 8 L 15 7 A 4 4 0 0 1 21 13 L 17 17 A 4 4 0 0 1 11 17"/>',
 		details: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/>',
 		close: '<path d="m6 6 12 12M6 18 18 6"/>',
 		download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
@@ -860,7 +956,7 @@ function proofOfWorkSection(proof: StoredPaste["proof_of_work"]): string {
     </section>`;
 }
 
-export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigation = false, staffReview = false, sharingState = 'limited'): Response {
+export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigation = false, staffReview = false): Response {
 	const id = escapeHtml(paste.id);
 	const qrHref = `https://cp.codes/${paste.id.toUpperCase()}`;
 	const typeLabel = CONTENT_TYPE_LABELS[paste.content_type];
@@ -873,23 +969,22 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
   <section class="paste-head">
     ${staffReview ? `<p class="status">Staff review — content remains subject to its current visibility. <a href="/admin/pastes">← moderation</a></p><div class="row"><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="approve"/><button type="submit">Approve public access</button></form><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="classify"/><select name="reason" aria-label="Restriction reason" required><option value="">Restriction reason…</option>${REPORT_CATEGORIES.map(reason => `<option>${escapeHtml(reason)}</option>`).join('')}</select> <button class="danger" type="submit">Restrict &amp; hide</button></form></div>` : ""}
     <div class="meta">${formatWhen(paste.created_at)} · ${paste.byte_length} bytes · <span id="paste-hit-count">${formatHitCount(hitCount)}</span> · <span class="type-badge">${escapeHtml(typeLabel)}</span>${filename}${visibility}</div>
-    <div class="policy-note sharing-banner">${staffReview ? 'Staff inspection — not a public approval.' : sharingState === 'approved' ? 'Human-approved · available for public sharing.' : sharingState === 'owner-review' ? 'Traffic review pending · you can still read this paste, but other connections must wait for human approval.' : 'Limited sharing · you + three other IPs. More traffic or a wider audience requires human review.'}</div>
-    ${paste.format ? `<nav class="paste-file-nav" id="paste-file-nav" aria-label="Paste files"></nav><p class="meta" id="selected-file-info"></p>` : ''}
     <div class="paste-toolbar">
     <p class="status paste-action-status" role="status" aria-atomic="true"><span><span class="action-feedback" id="paste-action-status"></span></span></p>
     <nav class="paste-actions" aria-label="Paste actions">
+      <button class="icon-action" type="button" id="copy-link" title="Copy link" aria-label="Copy link">${pasteIcon("link")}</button>
       <a class="icon-action" id="raw-paste" href="${rawUrl}" title="View raw content" aria-label="View raw content">${pasteIcon("raw")}</a>
       <button class="icon-action" type="button" id="copy-paste" data-cp-code="${id}" title="Copy content" aria-label="Copy content" disabled>${pasteIcon("copy")}</button>
+      <button class="icon-action" type="button" id="open-details" data-dialog="paste-details-dialog" aria-haspopup="dialog" aria-controls="paste-details-dialog" title="Paste details" aria-label="Paste details">${pasteIcon("details")}</button>
+      <button class="icon-action report" type="button" id="open-report" data-dialog="report-dialog" aria-haspopup="dialog" aria-controls="report-dialog" title="Report paste" aria-label="Report paste">${pasteIcon("report")}</button>
       <div class="paste-delete" id="paste-delete" hidden>
         <button type="button" class="icon-action danger" id="delete-paste" data-cp-code="${id}" title="Delete paste" aria-label="Delete paste">${pasteIcon("delete")}<span class="sr-only">Time remaining: <span id="delete-countdown">9:59</span></span></button>
       </div>
-      <button class="icon-action" type="button" id="open-report" data-dialog="report-dialog" aria-haspopup="dialog" aria-controls="report-dialog" title="Report paste" aria-label="Report paste">${pasteIcon("report")}</button>
-      <button class="icon-action" type="button" id="copy-link" title="Copy link" aria-label="Copy link">${pasteIcon("link")}</button>
-      <button class="icon-action" type="button" id="open-details" data-dialog="paste-details-dialog" aria-haspopup="dialog" aria-controls="paste-details-dialog" title="Paste details" aria-label="Paste details">${pasteIcon("details")}</button>
     </nav>
     </div>
   </section>
   <section class="card paste-card" style="padding:0; overflow:hidden;">
+    ${paste.format && (paste.files?.length ?? 0) > 1 ? `<nav class="paste-file-nav" id="paste-file-nav" role="tablist" aria-label="Paste files" hidden></nav>` : ''}
     <div id="paste-content" data-cp-code="${id}" data-content-url="${contentUrl}" data-staff-review="${staffReview}" data-format="${paste.format ?? 'single'}" data-primary="${escapeHtml(paste.primary ?? '')}" data-content-type="${escapeHtml(paste.content_type)}" data-byte-length="${paste.byte_length}" data-sha256="${escapeHtml(paste.sha256)}" aria-busy="true">
       <p class="paste-loading" role="status">Loading and decompressing paste…</p>
     </div>
@@ -973,7 +1068,7 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
 	const html = layout(
 		`cp.codes/${paste.id}`,
 		body,
-		`<script type="module" src="/view.js?v=18"></script>`,
+		`<script type="module" src="/view.js?v=23"></script>`,
 		paste.id,
 		{ showStaffNavigation },
 	);
@@ -988,7 +1083,7 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
 
 export function reviewRequiredPage(id: string, message: string, status = 423): Response {
 	const body = `<section class="hero"><p class="eyebrow">${escapeHtml(id)}</p><h1>Human review is needed.</h1><p>${escapeHtml(message)}</p></section><section class="card"><p>The paste is stored, but this connection cannot access its content yet. This can happen when its sharing budget is reached, the AI is uncertain, or a file needs manual inspection.</p><p>No repeated upload is needed. A moderator can approve the same link.</p><p><a href="/${escapeHtml(id)}">Check again</a> · <a href="/">Create another paste</a></p><div class="paste-delete" id="paste-delete" hidden><button type="button" class="danger" id="delete-paste" data-cp-code="${escapeHtml(id)}">Delete (<span id="delete-countdown">9:59</span>)</button><span class="status" id="delete-status" role="status"></span></div></section>`;
-	return new Response(layout('Review required — cp.codes', body, '<script type="module" src="/view.js?v=16"></script>'), {
+	return new Response(layout('Review required — cp.codes', body, '<script type="module" src="/view.js?v=23"></script>'), {
 		status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, private', 'referrer-policy': 'no-referrer', vary: 'Cookie, Authorization' },
 	});
 }

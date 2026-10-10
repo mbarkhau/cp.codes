@@ -46,7 +46,7 @@ export async function highlightPaste(root) {
 		const link = document.createElement("link");
 		link.id = "paste-highlight-style";
 		link.rel = "stylesheet";
-		link.href = "/highlight.css?v=1";
+		link.href = "/highlight.css?v=2";
 		document.head.append(link);
 	}
 
