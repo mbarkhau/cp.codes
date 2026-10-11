@@ -25,8 +25,6 @@
  *   POST   /api/paste      verify PoW, mint CP-Code, store paste
  *   GET    /api/paste/:id          JSON metadata
  *   GET    /api/paste/:id/content  stored compressed body
- *   POST   /api/paste/:id/authorize verify a passcode/passphrase
- *   DELETE /api/paste/:id          delete with a passcode/passphrase at any time
  *   POST   /api/paste/:id/report   report suspected illegal content
  *   GET  /api/pastes     recent uploads (newest first)
  *   GET  /api/admin             authenticated full staff dataset
@@ -48,7 +46,6 @@ import { assessPaste, initialModeration } from "./jev.mjs";
 import { MAX_UPLOAD_BYTES, MAX_REQUEST_BYTES, trafficDifficultyBits, shortIdDifficultyBits } from '../public/policy.js';
 import { clientIp } from './identity';
 import { boundedJson, boundedBytes, BodyLimitError } from './body';
-import { normalizePasscode, passphraseFromPasscode } from '../public/authorization.js';
 import { parseBundle, bundleManifest, bundleAssessmentText, bundleFileResponse, type Bundle } from './bundle';
 import { withAssetCachePolicy } from './assets';
 
@@ -553,7 +550,6 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 	const assessment = await assessPaste({ ...meta, content_type: combined?.unsupported ? 'png' : meta.content_type,
 		byte_length: new TextEncoder().encode(assessmentText).length }, assessmentText, env.DEFAPI_KEY);
 	const moderation = initialModeration(assessment);
-	const passcode = await paste.pasteIndexStub(env).createPasscode(id);
 	await paste.putPaste(
 		env,
 		meta,
@@ -594,8 +590,6 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 				requires_review: moderation.requires_review,
 				assessment_status: assessment.status,
 			},
-			passcode,
-			passphrase: passphraseFromPasscode(passcode),
 			pow: {
 				challenge_id: challenge.challenge_id,
 				solution,
@@ -909,46 +903,6 @@ async function handleReportPaste(request: Request, env: Env, id: string): Promis
 	}, 201, { "cache-control": "no-store" });
 }
 
-async function handleDeletePaste(request: Request, env: Env, id: string): Promise<Response> {
-	if (!admin.hasValidMutationOrigin(request)) return error('Invalid request origin', 403);
-	let body: unknown;
-	try {
-		body = await boundedJson(request, 4096);
-	} catch (err) {
-		return error("invalid JSON body", err instanceof BodyLimitError ? 413 : 400);
-	}
-	if (typeof body !== "object" || body === null || Array.isArray(body)) {
-		return error("body must be an object");
-	}
-	const rec = body as Record<string, unknown>;
-	const passcode = normalizePasscode(rec.passcode ?? rec.passphrase);
-	if (!passcode) return error('A valid passcode or passphrase is required', 403);
-	const result = await paste.deleteAuthorizedPaste(env, id, passcode);
-	if (result === "not_found") return error("paste not found", 404);
-	if (result === "unauthorized") return error("Invalid passcode or passphrase", 403);
-	return json({ deleted: true, id });
-}
-
-async function handleAuthorizePaste(request: Request, env: Env, id: string): Promise<Response> {
-	if (!admin.hasValidMutationOrigin(request)) return error('Invalid request origin', 403);
-	const requester = clientIp(request);
-	if (!requester) return error('Trusted edge IP identity is unavailable', 403);
-	if (!await pow.powKeyStub(env).allowChallenge(await pow.sha256Hex(`authorization:${requester}`))) {
-		return json({ error: 'Too many authorization attempts. Try again in ten minutes.' }, 429, { 'retry-after': '600' });
-	}
-	let body: unknown;
-	try { body = await boundedJson(request, 4096); }
-	catch (err) { return error('Invalid JSON body', err instanceof BodyLimitError ? 413 : 400); }
-	if (!body || typeof body !== 'object' || Array.isArray(body)) return error('Body must be an object');
-	const rec = body as Record<string, unknown>;
-	const passcode = normalizePasscode(rec.passcode ?? rec.passphrase);
-	const retained = await paste.getRetainedPaste(env, id);
-	if (!retained || retained.moderation.visibility === 'deleted') return error('Paste not found', 404);
-	if (!await paste.pasteIndexStub(env).hasPasscode(id)) return error('This older paste has no passcode. Staff can delete it.', 403);
-	if (!passcode || !await paste.pasteIndexStub(env).verifyPasscode(id, passcode)) return error('Invalid passcode or passphrase', 403);
-	return json({ authorized: true, id });
-}
-
 async function handleListPastes(url: URL, env: Env): Promise<Response> {
 	const rawLimit = url.searchParams.get("limit");
 	let limit = paste.RECENT_PASTE_LIMIT;
@@ -1042,12 +996,6 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext, t
 			return handleBundleFile(request, env, fileRoute[1]!.toUpperCase(), fileRoute[2]!, tracking);
 		}
 
-		const apiPasteAuthorize = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/authorize$/);
-		if (apiPasteAuthorize) {
-			if (method !== 'POST') return error('Method Not Allowed', 405);
-			return handleAuthorizePaste(request, env, apiPasteAuthorize[1]!.toUpperCase());
-		}
-
 		const apiPasteReport = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/report$/);
 		if (apiPasteReport) {
 			if (method !== "POST") return error("Method Not Allowed", 405);
@@ -1063,7 +1011,6 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext, t
 		const apiPaste = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))$/);
 		if (apiPaste) {
 			const id = apiPaste[1]!.toUpperCase();
-			if (method === "DELETE") return handleDeletePaste(request, env, id);
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
 			return handleGetPaste(request, env, id, "json", tracking);
 		}

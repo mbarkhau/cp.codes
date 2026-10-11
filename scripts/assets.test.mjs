@@ -77,7 +77,7 @@ after(async () => { await mf?.dispose(); });
 
 test('Worker applies the policy through both asset routes for GET and HEAD', async () => {
 	for (const origin of ['https://cp.codes', 'http://localhost:8787']) {
-		for (const path of [assetUrl('/app.js'), assetUrl('/wordlist.js'), '/lib/markdown-it-14.1.0.js', editorManifest.imports['@codemirror/view']]) {
+		for (const path of [assetUrl('/app.js'), assetUrl('/view_dialogs.js'), '/lib/markdown-it-14.1.0.js', editorManifest.imports['@codemirror/view']]) {
 			for (const method of ['GET', 'HEAD']) {
 				const response = await mf.dispatchFetch(`${origin}${path}`, { method });
 				assert.equal(response.status, 200);

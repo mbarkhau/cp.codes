@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 const source = await readFile(new URL('../public/view.js', import.meta.url), 'utf8');
 const helpers = source.slice(source.indexOf('function isCopyableImage'), source.indexOf('async function sha256Hex'));
-const copy = source.slice(source.indexOf('function initializePasteCopy'), source.indexOf('function initializePasteDeletion'));
+const copy = source.slice(source.indexOf('function initializePasteCopy'), source.indexOf('function escapeHtml', source.indexOf('function initializePasteCopy')));
 const pngBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const pngContent = `data:image/png;base64,${pngBytes.toString('base64')}`;
 

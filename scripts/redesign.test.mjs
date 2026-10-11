@@ -85,6 +85,20 @@ const textBundle = () => JSON.stringify({ format: 'bundle-v1', primary: 'readme.
 	{ name: 'hello.js', content_type: 'javascript', content: 'console.log("hello");' },
 ] });
 
+test('uploads issue no paste credentials and obsolete public mutation endpoints cannot alter content', async () => {
+	const ip = '192.0.2.90';
+	const paste = await upload('Paste without stored authorization', ip);
+	assert.equal('passcode' in paste, false);
+	assert.equal('passphrase' in paste, false);
+	const path = `/api/paste/${paste.id}`;
+	assert.equal((await jsonPost(`${path}/authorize`, { passcode: '0001020304050607' }, ip)).status, 404);
+	assert.equal((await fetch(path, { method: 'DELETE', headers: { 'content-type': 'application/json', ...ipHeaders(ip) },
+		body: JSON.stringify({ passcode: '0001020304050607' }) })).status, 405);
+	const response = await fetch(`${path}/content`, { headers: ipHeaders(ip) });
+	assert.equal(response.status, 200);
+	assert.equal(gunzipSync(Buffer.from(await response.arrayBuffer())).toString(), 'Paste without stored authorization');
+});
+
 test('immutable content is cached privately for a year for GET and HEAD, including bundles', async () => {
 	for (const [id, extra] of [['CP000120', {}], ['CP000121', { bundle: true, content: textBundle() }]]) {
 		await seed(id, extra);

@@ -8,8 +8,6 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { isContentType, type ContentType } from "./content_type";
-import { randomHex, timingSafeEqualHex } from "./pow";
-import { normalizePasscode, PASSPHRASE_WORD_COUNT } from '../public/authorization.js';
 import { initialModeration, MODEL, PROMPT_VERSION, type JevAssessment } from "./jev.mjs";
 import { BASE_BYTES, sizeDifficultyBits, SHARING_LIMITS } from '../public/policy.js';
 import type { FileManifest } from './bundle';
@@ -69,7 +67,6 @@ export type SharingAccess = {
 	reason: string;
 };
 
-export type DeletePasteResult = "deleted" | "not_found" | "unauthorized";
 
 export type PasteUploadMetadata = {
 	"cf-connecting-ip": string | null;
@@ -511,23 +508,6 @@ export async function getPasteObject(env: Env, id: string): Promise<StoredPasteO
 	};
 }
 
-export async function deleteAuthorizedPaste(
-	env: Env,
-	id: string,
-	passcode: string,
-): Promise<DeletePasteResult> {
-	const object = await env.PASTES.head(pasteObjectKey(id));
-	if (!object) return "not_found";
-	if (!await pasteIndexStub(env).verifyPasscode(id, passcode)) return "unauthorized";
-
-	// Make the paste inaccessible and persist its origin metadata before removing
-	// the body. This way an R2 failure cannot accidentally expose content already
-	// marked as deleted, and a successful deletion never loses its audit trail.
-	await pasteIndexStub(env).markDeleted(id, (await getRetainedPaste(env, id))?.metadata ?? pasteMetadataFromObject(object, id));
-	await env.PASTES.delete(pasteObjectKey(id));
-	return "deleted";
-}
-
 export async function listRecentPastes(
 	env: Env,
 	limit = RECENT_PASTE_LIMIT,
@@ -633,9 +613,6 @@ export class PasteIndex extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		ctx.blockConcurrencyWhile(async () => {
-		this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS paste_authorization (
-			paste_id TEXT PRIMARY KEY, passcode TEXT NOT NULL UNIQUE
-		)`);
 		this.ctx.storage.sql.exec(`
 			CREATE TABLE IF NOT EXISTS paste_rate_events (
 				paste_id TEXT PRIMARY KEY,
@@ -807,32 +784,6 @@ export class PasteIndex extends DurableObject<Env> {
 			`);
 		}
 		});
-	}
-
-	/** Codes never enter paste metadata or R2. The UNIQUE constraint also covers deleted pastes. */
-	createPasscode(id: string): string {
-		const pasteId = id.toUpperCase();
-		if (this.ctx.storage.sql.exec('SELECT paste_id FROM paste_authorization WHERE paste_id = ?', pasteId).toArray().length) {
-			throw new Error('Paste authorization already exists');
-		}
-		for (let attempt = 0; attempt < 10; attempt++) {
-			const passcode = randomHex(PASSPHRASE_WORD_COUNT);
-			const inserted = this.ctx.storage.sql.exec<{ passcode: string }>(
-				'INSERT OR IGNORE INTO paste_authorization (paste_id, passcode) VALUES (?, ?) RETURNING passcode', pasteId, passcode,
-			).toArray();
-			if (inserted.length) return passcode;
-		}
-		throw new Error('Could not generate unique paste authorization');
-	}
-
-	hasPasscode(id: string): boolean {
-		return this.ctx.storage.sql.exec('SELECT paste_id FROM paste_authorization WHERE paste_id = ?', id.toUpperCase()).toArray().length > 0;
-	}
-
-	verifyPasscode(id: string, value: string): boolean {
-		const passcode = normalizePasscode(value);
-		const row = this.ctx.storage.sql.exec<{ passcode: string }>('SELECT passcode FROM paste_authorization WHERE paste_id = ?', id.toUpperCase()).toArray()[0];
-		return Boolean(passcode && row && timingSafeEqualHex(passcode, row.passcode));
 	}
 
 	async record(

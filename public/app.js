@@ -472,7 +472,6 @@ async function solvePow(challenge) {
 }
 
 function loadMedia() { return import('./media.js?v=1'); }
-function loadAuthorization() { return import('./authorization.js?v=2'); }
 
 async function publish() {
 	if (isBusy || !consentEl.checked || !moderationConsentEl.checked) return;
@@ -507,8 +506,6 @@ async function publish() {
 			const { mediaDataUrlType } = await loadMedia();
 			if (mediaDataUrlType(content) !== contentType) throw new Error(`Media content must be a valid base64 ${contentType.toUpperCase()} data URL.`);
 		}
-		// Load before uploading so a failed import cannot strand a newly issued credential.
-		const { storeAuthorization } = await loadAuthorization();
 		if (["png", "jpeg", "webp", "gif"].includes(contentType)) {
 			setStatus(`Validating ${contentType.toUpperCase()} image…`);
 			await verifyDecodableImage(content.trim());
@@ -565,7 +562,6 @@ async function publish() {
 			}
 		}
 
-		storeAuthorization(pasteBody.id, pasteBody.passcode);
 		window.location.href = `/${pasteBody.id}`;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

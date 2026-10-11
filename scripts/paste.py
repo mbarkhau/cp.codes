@@ -242,7 +242,7 @@ def main(argv=None):
     parser.add_argument("--filename", help="public filename (default: input file's basename)")
     parser.add_argument("--unlisted", action="store_true", help="omit from recent uploads; NOT private")
     parser.add_argument("--consent-all", action="store_true", required=True, help="consent to collecting and storing your IP and location and sending paste text and filename to DefAPI/TypeSafe for automated moderation")
-    parser.add_argument("--json", action="store_true", help="print full API response, including the passcode and passphrase")
+    parser.add_argument("--json", action="store_true", help="print full API response")
     parser.add_argument("--timeout", type=positive_seconds, default=60, help="HTTP timeout in seconds (default: 60)")
     parser.add_argument("--pow-timeout", type=positive_seconds, default=120, help="proof search timeout in seconds per challenge (default: 120)")
     args = parser.parse_args(argv)
@@ -263,10 +263,6 @@ def main(argv=None):
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
             print(result["url"])
-            if result.get("passcode"):
-                print(f'Passcode (authorizes permanent deletion): {result["passcode"]}', file=sys.stderr)
-            if result.get("passphrase"):
-                print(f'Passphrase: {result["passphrase"]}', file=sys.stderr)
         if result.get("moderation", {}).get("visibility") == "hidden":
             print("Stored, but hidden pending moderation review; the URL is not public yet.", file=sys.stderr)
         elif result.get('moderation', {}).get('state') == 'limited':

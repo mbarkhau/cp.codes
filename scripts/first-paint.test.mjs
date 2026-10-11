@@ -102,7 +102,7 @@ try {
 	console.log('Staff navigation hints passed: valid, invalid, expired, unavailable, cross-tab, and cleared');
 	for (const [path, module] of [['/', 'app'], ['/CP000000', 'view']]) {
 		for (const theme of ['light', 'dark']) {
-			for (const held of [module, path === '/' ? 'files' : 'authorization_storage']) {
+			for (const held of (path === '/' ? [module, 'files'] : [module])) {
 				const context = await browser.newContext();
 				await context.addInitScript(theme => localStorage.setItem('cp.codes.theme', theme), theme);
 				const page = await context.newPage();
@@ -165,47 +165,38 @@ try {
 		} finally { release(); await context.close(); }
 	}
 	// Hold every optional module: the editor and plaintext viewer must still initialize.
-	const optional = new Set(['media', 'authorization', 'wordlist', 'qr_text', 'markdown', 'highlight', 'view_dialogs']);
+	const optional = new Set(['media', 'qr_text', 'markdown', 'highlight', 'view_dialogs']);
 	for (const path of ['/', '/CP000000']) {
-		for (const saved of [false, true]) {
-			const context = await browser.newContext();
-			if (saved) await context.addInitScript(() => localStorage.setItem('cp.codes.authorization.v1:CP000000',
-				JSON.stringify({ passcode: '0001020304050607' })));
-			const page = await context.newPage();
-			const errors = [];
-			page.on('pageerror', error => errors.push(error.message));
-			const requested = [];
-			let release;
-			const ready = new Promise(resolve => { release = resolve; });
-			await page.route('**/*.js?*', async route => {
-				const name = new URL(route.request().url()).pathname.slice(1, -3);
-				if (!optional.has(name)) return route.continue();
-				requested.push(name);
-				await ready; await route.abort();
-			});
-			try {
-				await page.goto(origin + path);
-				await page.locator(path === '/' ? '.editor-fallback' : '#paste-content pre').waitFor();
-				assert.deepEqual(requested, [], 'Initial editor/plaintext content must not request optional modules');
-				assert.deepEqual(errors, []);
-				if (path === '/') {
-					await page.locator('.editor-fallback').fill('Editable without optional imports');
-					await Promise.all([page.waitForRequest('**/media.js?*'),
-						page.locator('#file-input').setInputFiles({ name: 'test.txt', mimeType: 'text/plain', buffer: Buffer.from('Upload') })]);
-					await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Reading'));
-				} else {
-					assert.equal(await page.locator('#paste-content pre').textContent(), content);
-					assert.equal(await page.locator('dialog.paste-dialog').count(), 0);
-					if (saved) {
-						assert.equal((await page.locator('#saved-passphrase').textContent()).trim().split(/\s+/).length, 8);
-						await Promise.all([page.waitForRequest('**/authorization.js?*'), page.locator('#saved-passphrase').click()]);
-					} else {
-						await Promise.all([page.waitForRequest('**/view_dialogs.js?*'), page.locator('#open-details').click()]);
-						assert.equal(await page.locator('dialog.paste-dialog').count(), 0, 'Pending dialog code must not block readable content');
-					}
-				}
-				console.log(`Lazy imports passed: ${path}, saved credential ${saved}`);
-			} finally { release(); await context.close(); }
-		}
+		const context = await browser.newContext();
+		const page = await context.newPage();
+		const errors = [];
+		page.on('pageerror', error => errors.push(error.message));
+		const requested = [];
+		let release;
+		const ready = new Promise(resolve => { release = resolve; });
+		await page.route('**/*.js?*', async route => {
+			const name = new URL(route.request().url()).pathname.slice(1, -3);
+			if (!optional.has(name)) return route.continue();
+			requested.push(name);
+			await ready; await route.abort();
+		});
+		try {
+			await page.goto(origin + path);
+			await page.locator(path === '/' ? '.editor-fallback' : '#paste-content pre').waitFor();
+			assert.deepEqual(requested, [], 'Initial editor/plaintext content must not request optional modules');
+			assert.deepEqual(errors, []);
+			if (path === '/') {
+				await page.locator('.editor-fallback').fill('Editable without optional imports');
+				await Promise.all([page.waitForRequest('**/media.js?*'),
+					page.locator('#file-input').setInputFiles({ name: 'test.txt', mimeType: 'text/plain', buffer: Buffer.from('Upload') })]);
+				await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Reading'));
+			} else {
+				assert.equal(await page.locator('#paste-content pre').textContent(), content);
+				assert.equal(await page.locator('dialog.paste-dialog').count(), 0);
+				await Promise.all([page.waitForRequest('**/view_dialogs.js?*'), page.locator('#open-details').click()]);
+				assert.equal(await page.locator('dialog.paste-dialog').count(), 0, 'Pending dialog code must not block readable content');
+			}
+			console.log(`Lazy imports passed: ${path}`);
+		} finally { release(); await context.close(); }
 	}
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

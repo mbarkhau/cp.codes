@@ -23,7 +23,7 @@ const paste = { id: 'CP000000', created_at: '2026-10-11T00:00:00Z', content_type
 	format: 'bundle-v1', primary: files[0].name, filename: files[0].name,
 	files: files.map(file => ({ ...file, content: undefined, byte_length: Buffer.byteLength(file.content), sha256: hash(file.content) })),
 	byte_length: Buffer.byteLength(content), compressed_byte_length: Buffer.byteLength(content), content_encoding: 'identity', sha256: hash(content) };
-let reports = 0, authorizations = 0;
+let reports = 0;
 const server = createServer(async (request, response) => {
 	const path = new URL(request.url, 'http://localhost').pathname;
 	if (path === '/CP000000' || path === '/held') {
@@ -31,12 +31,11 @@ const server = createServer(async (request, response) => {
 		response.end(await (path === '/held' ? ui.reviewRequiredPage(paste.id, 'Fixture awaiting review.') : ui.viewPage(paste, 0)).text());
 	} else if (path === '/api/paste/CP000000/content') {
 		response.setHeader('content-type', 'text/plain'); response.end(content);
-	} else if (/^\/api\/paste\/CP000000\/(report|authorize)$/.test(path)) {
+	} else if (/^\/api\/paste\/CP000000\/report$/.test(path)) {
 		let body = ''; for await (const chunk of request) body += chunk;
 		const data = JSON.parse(body);
-		if (path.endsWith('/report')) { reports++; assert.deepEqual(data, { category: null, email: null }); }
-		else { authorizations++; assert.equal(data.passcode, '0001020304050607'); }
-		response.setHeader('content-type', 'application/json'); response.end('{"authorized":true}');
+		reports++; assert.deepEqual(data, { category: null, email: null });
+		response.setHeader('content-type', 'application/json'); response.end('{"reported":true}');
 	} else if (/^\/[a-z_]+\.(js|css)$/.test(path) || path === '/lib/uqr-0.1.2.js') {
 		response.setHeader('content-type', path.endsWith('.js') ? 'application/javascript' : 'text/css');
 		try { response.end(await readFile(new URL('../public' + path, import.meta.url))); }
@@ -49,6 +48,9 @@ let browser;
 try {
 	browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
 	const context = await browser.newContext();
+	// Credentials left by an older viewer must have no effect on the new UI.
+	await context.addInitScript(() => localStorage.setItem('cp.codes.authorization.v1:CP000000',
+		JSON.stringify({ passcode: '0001020304050607' })));
 	const page = await context.newPage();
 	const errors = [], requests = [];
 	page.on('pageerror', error => errors.push(error.message));
@@ -61,6 +63,8 @@ try {
 		await page.goto(origin + '/CP000000', { waitUntil: 'commit' });
 		await contentRequested;
 		await page.locator('#open-details').waitFor();
+		assert.equal(await page.locator('#authorize-paste, #saved-authorization, #paste-delete, [data-icon="lock"]').count(), 0);
+		assert.equal(requests.some(path => /authorization|wordlist/.test(path)), false);
 		assert.equal(await page.locator('dialog').count(), 0);
 		assert.equal(requests.includes('/view_dialogs.js'), false);
 		await page.locator('#open-details').dblclick();
@@ -96,16 +100,8 @@ try {
 		assert.equal(await page.locator('#report-dialog').count(), 1);
 		assert.equal(reports, 1, 'Reopening does not submit another report');
 		await page.keyboard.press('Escape');
-		await page.locator('#authorize-paste').click();
-		await page.getByLabel('Passphrase', { exact: true }).fill('0001020304050607');
-		await page.getByRole('button', { name: 'Authorize', exact: true }).click();
-		await page.waitForFunction(() => document.querySelector('#saved-authorization')?.hidden === false);
-		assert.equal(authorizations, 1);
-		assert.equal(await page.locator('dialog').count(), 0, 'Reload with saved credentials still creates no dialogs');
-		assert.equal(await page.locator('#authorize-paste').isVisible(), false);
-		assert.equal(await page.locator('#paste-delete').isVisible(), true);
 		assert.deepEqual(errors, []);
-		console.log('Lazy dialogs passed: initial loading, early details, download links, QR, repeated clicks, focus restoration, reporting and authorization.');
+		console.log('Lazy dialogs passed: initial loading, early details, download links, QR, repeated clicks, focus restoration, reporting.');
 	} finally { release(); await context.close(); }
 
 	for (const scenario of ['held', 'failed-import']) {
@@ -114,13 +110,10 @@ try {
 			if (scenario === 'failed-import') await page.route('**/view_dialogs.js?*', route => route.abort());
 			await page.goto(origin + (scenario === 'held' ? '/held' : '/CP000000'));
 			assert.equal(await page.locator('dialog').count(), 0);
-			await page.locator('#authorize-paste').click();
 			if (scenario === 'held') {
-				await page.getByLabel('Passphrase', { exact: true }).fill('0001020304050607');
-				await page.getByRole('button', { name: 'Authorize', exact: true }).click();
-				await page.waitForFunction(() => document.querySelector('#saved-authorization')?.hidden === false);
-				assert.equal(authorizations, 2);
+				assert.equal(await page.locator('.paste-actions, #authorize-paste, #saved-authorization').count(), 0);
 			} else {
+				await page.locator('#open-details').click();
 				await page.waitForFunction(() => document.querySelector('#paste-action-status').textContent.includes('Could not open dialog'));
 				assert.equal(await page.locator('#paste-content code').textContent(), files[0].content);
 				assert.equal(await page.locator('#copy-paste').isEnabled(), true);

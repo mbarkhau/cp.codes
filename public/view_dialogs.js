@@ -3,33 +3,6 @@ const PASTE_CACHE_KEY = "cp.codes.paste.v1";
 const PASTE_CACHE_MAX_ENTRIES = 10;
 const QR_DISPLAY_SCALE = 6;
 
-function initializeAuthorizationForm(button) {
-	const form = document.getElementById('authorization-form');
-	const input = document.getElementById('authorization-input');
-	const status = document.getElementById('authorization-status');
-	if (!(button instanceof HTMLButtonElement) || !(form instanceof HTMLFormElement)) return;
-	const id = button.dataset.cpCode;
-	const authorize = async (value) => {
-		const { normalizePasscode, storeAuthorization } = await import('./authorization.js?v=2');
-		const normalized = normalizePasscode(value);
-		if (!normalized) throw new Error('Enter an eight-word passphrase.');
-		const response = await fetch(`/api/paste/${id}/authorize`, {
-			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passcode: normalized }),
-		});
-		const result = await response.json();
-		if (!response.ok) throw new Error(result.error?.replace(/\bpasscode(?: or passphrase)?\b/gi, 'passphrase') || 'Authorization failed');
-		if (!storeAuthorization(id, normalized)) throw new Error('Authorization succeeded, but browser storage is unavailable. Enable it or use the deletion API with your credential.');
-		location.reload();
-	};
-	form.addEventListener('submit', async (event) => {
-		event.preventDefault();
-		const submit = form.querySelector('button[type="submit"]');
-		submit.disabled = true; status.textContent = 'Authorizing…';
-		try { await authorize(input.value); }
-		catch (error) { status.textContent = error.message; submit.disabled = false; }
-	});
-}
-
 function initializePasteReport(showActionFeedback) {
 	const form = document.getElementById("report-paste");
 	const status = document.getElementById("report-status");
@@ -105,17 +78,6 @@ function proofOfWorkSection(proof) {
 
 function createPasteDialog(button, showActionFeedback) {
 	const dialogId = button.dataset.dialog;
-	if (dialogId === 'authorization-dialog') {
-		appendPasteDialog('authorization-dialog', 'authorization-heading', 'Authorize paste', 'Close authorization', `
-  <form class="authorization-form" id="authorization-form">
-    <label for="authorization-input">Passphrase</label>
-    <input id="authorization-input" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="256" required />
-    <button type="submit">Authorize</button>
-    <p class="status" id="authorization-status" role="status"></p>
-  </form>`);
-		initializeAuthorizationForm(button);
-		return;
-	}
 	const host = document.getElementById('paste-content');
 	if (!(host instanceof HTMLElement)) return;
 	const paste = {

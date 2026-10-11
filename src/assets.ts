@@ -2,9 +2,7 @@ import editorManifest from '../public/lib/codemirror/manifest.json';
 
 /** Bump a changed asset and every module that imports it before deployment. */
 export const CLIENT_ASSET_VERSIONS = {
-	'/app.js': '62',
-	'/authorization.js': '2',
-	'/authorization_storage.js': '1',
+	'/app.js': '63',
 	'/content_type.js': '8',
 	'/files.js': '34',
 	'/highlight.js': '2',
@@ -14,12 +12,11 @@ export const CLIENT_ASSET_VERSIONS = {
 	'/pow_worker.js': '2',
 	'/qr_text.js': '2',
 	'/site.js': '5',
-	'/view.js': '35',
-	'/view_dialogs.js': '1',
-	'/wordlist.js': '1',
+	'/view.js': '36',
+	'/view_dialogs.js': '2',
 	'/admin.css': '1',
 	'/highlight.css': '2',
-	'/style.css': '4',
+	'/style.css': '5',
 	'/favicon-32.png': '1',
 	'/favicon.svg': '1',
 } as const;

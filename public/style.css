@@ -16,8 +16,6 @@
   --danger: #a52c43;
   --report-hover: #9b4f59;
   --success: #1e715b;
-  --authorization-bg: #e7deb2;
-  --authorization-fg: #574a1d;
   --shadow: 1px 1px 10px rgba(100, 100, 100, 0.5);
   --syntax-comment: #59636e;
   --syntax-keyword: #cf222e;
@@ -45,8 +43,6 @@
   --focus: #a9a9a4;
   --danger: #c1aaa8;
   --success: #acb9b0;
-  --authorization-bg: #49432b;
-  --authorization-fg: #ded09e;
   --shadow: 1px 1px 10px rgba(100, 100, 100, 0.5);
   --syntax-comment: #919ba5;
   --syntax-keyword: #ff7b72;
@@ -71,8 +67,10 @@ a:hover { color: var(--accent-hover); text-decoration-color: currentColor; }
 .wrap { max-width: 72rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
 .wrap.wide { max-width: 96rem; }
 header { display: flex; align-items: center; min-height: 2.5rem; margin-bottom: 2rem; }
-.logo { font-family: var(--mono); font-weight: 650; font-size: 1.15rem; letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }
+.logo { font-family: var(--mono); font-weight: 650; font-size: 1.15rem; line-height: 1.15rem; letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }
 .logo a { color: inherit; text-decoration: none; }
+.logo a:hover { text-decoration: underline; }
+.logo:hover a:first-child { text-decoration: underline; }
 .logo span { color: var(--muted); }
 .site-nav {
   display: flex;
@@ -314,7 +312,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .icon-action[data-icon="report"] { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M5%2021V3m0%201h14l-3%204%203%204H5%22%2F%3E%3C%2Fsvg%3E"); }
 .icon-action[data-icon="link"] { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M%2016%2012%20L%207%2012%20M%209%2016%20L%208%2017%20A%204%204%200%200%201%202%2011%20L%206%207%20A%204%204%200%200%201%2012%207%20M%2014%208%20L%2015%207%20A%204%204%200%200%201%2021%2013%20L%2017%2017%20A%204%204%200%200%201%2011%2017%22%2F%3E%3C%2Fsvg%3E"); }
 .icon-action[data-icon="details"] { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%229%22%2F%3E%3Cpath%20d%3D%22M12%2011v6m0-10v.01%22%2F%3E%3C%2Fsvg%3E"); }
-.icon-action[data-icon="lock"] { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%225%22%20y%3D%2210%22%20width%3D%2214%22%20height%3D%2211%22%20rx%3D%222%22%2F%3E%3Cpath%20d%3D%22M8%2010V7a4%204%200%200%201%208%200v3m-4%205v2%22%2F%3E%3C%2Fsvg%3E"); }
 .icon-action[data-icon="close"] { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22m6%206%2012%2012M6%2018%2018%206%22%2F%3E%3C%2Fsvg%3E"); }
 .icon-action[data-icon="download"] { --action-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%203v12m-5-5%205%205%205-5M4%2016v5h16v-5%22%2F%3E%3C%2Fsvg%3E"); }
 @media (forced-colors: active) { .icon-action[data-icon]::before { forced-color-adjust: none; } }
@@ -323,14 +320,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .icon-action.danger { color: var(--danger); background: var(--surface); border-color: var(--border); }
 .icon-action.danger:hover:not(:disabled),
 .icon-action.report:hover:not(:disabled) { color: #fff; background: var(--report-hover); border-color: var(--report-hover); filter: none; }
-.icon-action.authorize { color: var(--authorization-fg); }
-.icon-action.authorize:hover:not(:disabled) { background: var(--authorization-bg); border-color: var(--authorization-fg); }
-.saved-authorization { width: fit-content; max-width: 100%; margin: 0.35rem 0 0 auto; }
-.authorization-passphrase { font-family: var(--mono); font-size: 0.825rem; line-height: 1.2; padding: 0; margin: 0; max-width: 100%; overflow-x: auto; color: var(--muted); white-space: pre; user-select: text; }
-.authorization-passphrase[role="button"] { cursor: pointer; }
-.authorization-passphrase:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.authorization-form { display: grid; gap: 0.75rem; margin-top: 1rem; }
-.authorization-form input { width: 100%; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .paste-dialog { color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1.25rem; width: min(58rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; box-shadow: var(--shadow); }
 .paste-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
@@ -341,9 +330,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .paste-file-metadata h3 { overflow-wrap: anywhere; }
 .paste-file-links { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
 .paste-file-links[hidden] { display: none; }
-.paste-delete { display: flex; gap: 0.55rem; align-items: center; }
-.paste-delete[hidden] { display: none; }
-.paste-delete .status { margin: 0; }
 button.danger {
   border-color: var(--danger);
   background: var(--danger);

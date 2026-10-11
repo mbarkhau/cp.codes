@@ -274,18 +274,9 @@ try {
 	await page.locator('#consent').check(); await page.locator('#consent-moderation').check(); await page.locator('#publish').click();
 	await page.waitForURL(url => /^\/CP[A-Z0-9]+$/.test(url.pathname));
 	const id = new URL(page.url()).pathname.slice(1);
-	const credentials = await page.evaluate(id => JSON.parse(localStorage.getItem(`cp.codes.authorization.v1:${id}`)), id);
-	assert.match(credentials.passcode, /^[0-9a-f]{16}$/);
-	assert.equal(credentials.passphrase.split(' ').length, 8);
-	assert.equal(await page.locator('#upload-result').count(), 0);
-	await page.locator('#saved-authorization').waitFor({ state: 'visible' });
-	assert.deepEqual((await page.locator('#saved-passphrase').textContent()).trim().split(/\s+/), Array(8).fill('********'));
-	await page.locator('#saved-passphrase').click();
-	await page.waitForFunction(() => !document.querySelector('#saved-passphrase').textContent.includes('********'));
-	assert.equal((await page.locator('#saved-passphrase').textContent()).trim().split(/\s+/).join(' '), credentials.passphrase);
-	assert.ok(!(await page.locator('#saved-authorization').innerText()).includes(credentials.passcode));
+	assert.equal(await page.locator('#upload-result, #authorize-paste, #saved-authorization, #paste-delete').count(), 0);
+	assert.equal(await page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('cp.codes.authorization.'))), false);
 	assert.match(await page.locator('h1').innerText(), /Human review/);
-	await page.locator('#paste-delete').waitFor({ state: 'visible' });
 	await page.goto(`${origin}/login`); await page.locator('#username').fill('admin'); await page.locator('#password').fill('4dm1n');
 	await page.getByRole('button', { name: 'Log in', exact: true }).click(); await page.waitForURL('**/admin/pastes');
 	await page.goto(`${origin}/about`);
@@ -309,42 +300,10 @@ try {
 	await viewer.waitForFunction(() => document.querySelector('#paste-content img')?.naturalWidth === 1);
 	assert.equal(await viewer.locator('.sharing-banner, #selected-file-info').count(), 0);
 	assert.equal(await viewer.locator('#paste-file-nav button').count(), 4);
-	assert.equal(await viewer.locator('#paste-delete').isVisible(), false);
 	assert.equal(await viewer.locator('.paste-actions .icon-action svg').count(), 0);
-	assert.equal(await viewer.locator('.paste-actions .icon-action[data-icon]').count(), 7);
+	assert.equal(await viewer.locator('.paste-actions .icon-action[data-icon]').count(), 5);
 	assert.deepEqual(await viewer.locator('.paste-actions > .icon-action').evaluateAll(actions => actions.map(action => action.id)),
-		['copy-link', 'raw-paste', 'copy-paste', 'open-details', 'open-report', 'authorize-paste']);
-	await viewer.screenshot({ path: '/tmp/cp-codes-authorization-locked.png', fullPage: true });
-	await viewer.getByRole('button', { name: 'Unlock / authorize paste', exact: true }).click();
-	await viewer.getByLabel('Passphrase', { exact: true }).fill('abacus '.repeat(8));
-	await viewer.getByRole('button', { name: 'Authorize', exact: true }).click();
-	await viewer.waitForFunction(() => document.querySelector('#authorization-status').textContent.includes('Invalid passphrase'));
-	assert.equal(await viewer.locator('#paste-delete').isVisible(), false);
-	await viewer.getByLabel('Passphrase', { exact: true }).fill(credentials.passphrase);
-	await viewer.getByRole('button', { name: 'Authorize', exact: true }).click();
-	await viewer.waitForFunction(() => document.querySelector('#saved-authorization')?.hidden === false);
-	await viewer.waitForFunction(() => document.querySelector('#paste-content img')?.naturalWidth === 1);
-	assert.equal(await viewer.locator('#authorize-paste').isVisible(), false);
-	assert.equal(await viewer.locator('#paste-delete').isVisible(), true);
-	assert.equal(await viewer.locator('#saved-passcode, #saved-authorization input').count(), 0);
-	const phraseLayout = await viewer.locator('#saved-passphrase').evaluate(phrase => {
-		const style = getComputedStyle(phrase);
-		return { tag: phrase.tagName, text: phrase.textContent, fontSize: parseFloat(style.fontSize),
-			lineHeight: parseFloat(style.lineHeight), padding: style.padding,
-			top: phrase.getBoundingClientRect().top, contentBottom: document.querySelector('.paste-card').getBoundingClientRect().bottom };
-	});
-	assert.equal(phraseLayout.tag, 'PRE');
-	assert.deepEqual(phraseLayout.text.split('\n').map(row => row.trim().split(/\s+/).length), [4, 4]);
-	assert.deepEqual(phraseLayout.text.trim().split(/\s+/), Array(8).fill('********'));
-	assert.ok(Math.abs(phraseLayout.fontSize - 13.2) < 0.01 && Math.abs(phraseLayout.lineHeight / phraseLayout.fontSize - 1.2) < 0.01);
-	assert.equal(phraseLayout.padding, '0px');
-	assert.ok(phraseLayout.top >= phraseLayout.contentBottom);
-	await viewer.locator('#saved-passphrase').focus();
-	assert.equal(await viewer.locator('#saved-passphrase').textContent(), phraseLayout.text);
-	await viewer.locator('#saved-passphrase').click();
-	await viewer.waitForFunction(() => !document.querySelector('#saved-passphrase').textContent.includes('********'));
-	assert.equal((await viewer.locator('#saved-passphrase').textContent()).trim().split(/\s+/).join(' '), credentials.passphrase);
-	assert.ok(!(await viewer.locator('body').innerText()).includes(credentials.passcode));
+		['copy-link', 'raw-paste', 'copy-paste', 'open-details', 'open-report']);
 	const copyIcon = await actionIcon(viewer.locator('#copy-paste'));
 	assert.equal(copyIcon.strokeWidth, '1.7');
 	assert.ok(Math.abs(parseFloat(copyIcon.width) - 19.2) < 0.02);
@@ -518,12 +477,6 @@ try {
 	await viewer.waitForURL(url => /^\/CP[A-Z0-9]+$/.test(url.pathname));
 	await viewer.waitForFunction(() => document.querySelector('#paste-content h1')?.textContent === 'A harmless text-only paste');
 	assert.equal(await viewer.locator('.sharing-banner, #selected-file-info, #paste-file-nav').count(), 0);
-	await viewer.locator('#paste-delete').waitFor({ state: 'visible' });
-	const textPasteId = await viewer.locator('#paste-content').getAttribute('data-cp-code');
-	const textCredentials = await viewer.evaluate(id => JSON.parse(localStorage.getItem(`cp.codes.authorization.v1:${id}`)), textPasteId);
-	assert.ok((await actionIcon(viewer.locator('#delete-paste'))).path);
-	assert.equal(await viewer.locator('#delete-paste').getAttribute('title'), 'Delete paste');
-	assert.equal(await viewer.locator('#delete-countdown').count(), 0);
 	await viewer.setViewportSize({ width: 390, height: 844 });
 	const mobileActionsBefore = await viewer.locator('.paste-actions').boundingBox();
 	const mobileContentBefore = await viewer.locator('.paste-card').boundingBox();
@@ -540,14 +493,6 @@ try {
 	await viewer.getByRole('button', { name: 'Paste details', exact: true }).click();
 	assert.match(await viewer.locator('#paste-details-dialog').innerText(), /leading zero bits/);
 	await viewer.getByRole('button', { name: 'Close details', exact: true }).click();
-	await viewer.evaluate(() => {
-		const id = document.querySelector('#paste-content').dataset.cpCode;
-		localStorage.removeItem(`cp.codes.authorization.v1:${id}`);
-	});
-	await viewer.reload();
-	await viewer.waitForFunction(() => document.querySelector('#paste-content h1')?.textContent === 'A harmless text-only paste');
-	assert.equal(await viewer.locator('#paste-delete').isVisible(), false);
-	assert.equal(await viewer.locator('#authorize-paste').isVisible(), true);
 	await viewer.getByRole('button', { name: 'Report paste', exact: true }).click();
 	const reportBefore = await viewer.locator('#report-dialog').boundingBox();
 	await viewer.getByRole('button', { name: 'Submit report', exact: true }).click();
@@ -579,16 +524,6 @@ try {
 	assert.ok(await viewer.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 	await viewer.locator('#theme-toggle').click(); assert.equal(await viewer.locator('html').getAttribute('data-theme'), 'dark');
 	await viewer.screenshot({ path: '/tmp/cp-codes-mobile.png', fullPage: true });
-	await viewer.goto(`${origin}/${textPasteId}`);
-	await viewer.getByRole('button', { name: 'Unlock / authorize paste', exact: true }).click();
-	await viewer.getByLabel('Passphrase', { exact: true }).fill(textCredentials.passphrase);
-	await viewer.getByRole('button', { name: 'Authorize', exact: true }).click();
-	await viewer.locator('#paste-delete').waitFor({ state: 'visible' });
-	viewer.once('dialog', dialog => dialog.accept());
-	await viewer.getByRole('button', { name: 'Delete paste', exact: true }).click();
-	await viewer.waitForURL(origin + '/');
-	assert.equal(await viewer.evaluate(id => localStorage.getItem(`cp.codes.authorization.v1:${id}`), textPasteId), null);
-	assert.equal((await mf.dispatchFetch(`${origin}/api/paste/${textPasteId}`)).status, 404);
 	await page.goto(`${origin}/about`);
 	await page.getByRole('button', { name: 'log out', exact: true }).click();
 	await page.waitForURL('**/login');
@@ -596,5 +531,5 @@ try {
 	assert.equal(await page.locator('.staff-nav-start, .nav-logout').count(), 0);
 	assert.doesNotMatch(await page.evaluate(() => document.cookie), /(?:^|; )cp_staff_nav=1(?:;|$)/);
 	assert.deepEqual(errors, []);
-	console.log('Browser smoke passed: passphrase authorization, masked phrase grid below content with click to reveal, authorized deletion, image/text clipboard, responsive file tabs/deep links, theme hierarchy/contrast, editor placeholder/layout, focus/selection, files, media review, staff inspection/approval, sibling images, limited text sharing, mobile layout and dark mode.');
+	console.log('Browser smoke passed: image/text clipboard, responsive file tabs/deep links, theme hierarchy/contrast, editor placeholder/layout, focus/selection, files, media review, staff inspection/approval, sibling images, limited text sharing, mobile layout and dark mode.');
 } finally { await browser?.close(); await mf.dispose(); }

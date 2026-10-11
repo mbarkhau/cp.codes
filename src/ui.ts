@@ -239,15 +239,6 @@ ${rows}
 }
 
 
-function authorizationControls(id: string): string {
-	return `<button class="icon-action authorize" type="button" id="authorize-paste" data-cp-code="${escapeHtml(id)}" data-dialog="authorization-dialog" aria-haspopup="dialog" aria-controls="authorization-dialog" title="Unlock / authorize paste" aria-label="Unlock / authorize paste" data-icon="lock"></button>
-      <div class="paste-delete" id="paste-delete" hidden><button type="button" class="icon-action danger" id="delete-paste" data-cp-code="${escapeHtml(id)}" title="Delete paste" aria-label="Delete paste" data-icon="delete"></button></div>`;
-}
-
-function authorizationPassphrase(): string {
-	return '<div class="saved-authorization" id="saved-authorization" hidden><pre class="authorization-passphrase" id="saved-passphrase" aria-label="Saved passphrase"></pre></div>';
-}
-
 const VIEW_MODULE_URL = assetUrl('/view.js');
 
 export function viewPage(paste: StoredPaste, hitCount: number, staffReview = false): Response {
@@ -269,9 +260,7 @@ export function viewPage(paste: StoredPaste, hitCount: number, staffReview = fal
 	// Discover content early, but let the site module and CSS win bandwidth for the shell's first paint.
 	// Keep these after the site module and CSS, within the first KiB.
 	// Anonymous CORS matches fetch()'s default mode and same-origin credentials.
-	const resourceHints = `<link rel="preload" href="${contentUrl}" as="fetch" crossorigin="anonymous" />
-  <link rel="preload" href="${assetUrl('/highlight.css')}" as="style"/>
-  <link rel="modulepreload" href="${assetUrl('/authorization_storage.js')}" />`;
+	const resourceHints = `<link rel="preload" href="${contentUrl}" as="fetch" crossorigin="anonymous" />`;
 	const filename = paste.filename ? ` · <strong>${escapeHtml(paste.filename)}</strong>` : "";
 	const visibility = paste.unlisted ? " · unlisted" : "";
 	const body = `
@@ -287,7 +276,6 @@ export function viewPage(paste: StoredPaste, hitCount: number, staffReview = fal
       <p class="paste-loading" role="status">Loading and decompressing paste…</p>
     </div>
   </section>
-  ${authorizationPassphrase()}
 </div>`;
 	const html = layout(
 		`cp.codes/${paste.id}`,
@@ -305,8 +293,8 @@ export function viewPage(paste: StoredPaste, hitCount: number, staffReview = fal
 }
 
 export function reviewRequiredPage(id: string, message: string, status = 423): Response {
-	const body = `<section class="hero"><p class="eyebrow">${escapeHtml(id)}</p><h1>Human review is needed.</h1><p>${escapeHtml(message)}</p></section><section class="card"><p>The paste is stored, but this connection cannot access its content yet. This can happen when its sharing budget is reached, the AI is uncertain, or a file needs manual inspection.</p><p>No repeated upload is needed. A moderator can approve the same link.</p><p><a href="/${escapeHtml(id)}">Check again</a> · <a href="/">Create another paste</a></p><nav class="paste-actions" aria-label="Paste actions">${authorizationControls(id)}</nav><p class="status" id="paste-action-status" role="status"></p></section>${authorizationPassphrase()}`;
-	return new Response(layout('Review required — cp.codes', body, `<script type="module" src="${VIEW_MODULE_URL}"></script>`), {
+	const body = `<section class="hero"><p class="eyebrow">${escapeHtml(id)}</p><h1>Human review is needed.</h1><p>${escapeHtml(message)}</p></section><section class="card"><p>The paste is stored, but this connection cannot access its content yet. This can happen when its sharing budget is reached, the AI is uncertain, or a file needs manual inspection.</p><p>No repeated upload is needed. A moderator can approve the same link.</p><p><a href="/${escapeHtml(id)}">Check again</a> · <a href="/">Create another paste</a></p></section>`;
+	return new Response(layout('Review required — cp.codes', body), {
 		status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, private', 'referrer-policy': 'no-referrer', vary: 'Cookie, Authorization' },
 	});
 }

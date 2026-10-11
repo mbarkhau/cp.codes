@@ -116,21 +116,13 @@ test("browser requires both consents, locks both while busy, and submits both", 
 	getElement("content-type").value = "plaintext";
 	getElement("content-type").options = [{ value: "plaintext", textContent: "Plaintext" }];
 	const requests = [];
-	const authorizations = [];
 	const location = { href: '' };
-	let authorizationStored = true;
 	let visibility = 'hidden';
 	const context = vm.createContext({
 		document: { getElementById: getElement }, TextEncoder,
 		window: { location },
 		localStorage: { length: 0 }, detectContentType: () => "plaintext",
-		storeAuthorization: (id, passcode) => {
-			assert.equal(location.href, '');
-			authorizations.push({ id, passcode });
-			return authorizationStored;
-		},
 		contentTypeForFilename: () => "plaintext",
-		loadAuthorization: async () => ({ storeAuthorization: context.storeAuthorization }),
 		sha256Hex: async () => "hash", gzip: async () => new Uint8Array([1]),
 		bytesToBase64: () => "gzip", solvePow: async () => ({ solution: "0", pow_hash: "proof" }),
 		fetch: async (path, options) => {
@@ -138,7 +130,7 @@ test("browser requires both consents, locks both while busy, and submits both", 
 			assert.equal(getElement("consent").disabled, true);
 			assert.equal(getElement("consent-moderation").disabled, true);
 			return { ok: true, json: async () => path === "/api/challenge" ? {} : {
-				id: "CPTEST00", passcode: "0123456789abcdef", moderation: { visibility },
+				id: "CPTEST00", moderation: { visibility },
 			} };
 		},
 	});
@@ -174,10 +166,8 @@ test("browser requires both consents, locks both while busy, and submits both", 
 	assert.equal(getElement("consent-moderation").disabled, false);
 	assert.equal(getElement("publish").disabled, false);
 	assert.equal(location.href, '/CPTEST00');
-	assert.deepEqual(authorizations, [{ id: 'CPTEST00', passcode: '0123456789abcdef' }]);
-	// Successful uploads navigate even when browser storage is unavailable.
+	// Both moderation outcomes navigate to the uploaded paste.
 	for (visibility of ['hidden', 'limited']) {
-		authorizationStored = false;
 		location.href = '';
 		await vm.runInContext("publish()", context);
 		assert.equal(location.href, '/CPTEST00');

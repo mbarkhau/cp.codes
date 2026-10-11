@@ -36,7 +36,6 @@ function browser({ decodeFails = false } = {}) {
 		atob, Uint8Array, TextDecoder, Image, contentEl, filenameEl,
 		MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType,
 		loadMedia: async () => ({ MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType }),
-		loadAuthorization: async () => ({ storeAuthorization: () => true }),
 		document: { getElementById: () => null, createElement: (tag) => tag === "img" ? new Image() : new Element(tag) },
 		bytesToBase64: (bytes) => Buffer.from(bytes).toString("base64"),
 		updateBytes: () => Buffer.byteLength(contentEl.value),
@@ -175,7 +174,7 @@ test("browser publish submits encoded media with the matching type and body-boun
 		Object.assign(b.context, {
 			TextEncoder, isBusy: false, consentEl: { checked: true }, moderationConsentEl: { checked: true },
 			listedEl: { checked: true },
-			updateDetection: () => media.type, setBusy() {}, storeAuthorization: () => true, passphraseFromPasscode: () => 'fixture phrase',
+			updateDetection: () => media.type, setBusy() {},
 			sha256Hex: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
 			gzip: async (bytes) => gzipSync(bytes), MAX_POW_SUBMISSION_ATTEMPTS: 1,
 			solvePow: async () => ({ solution: "0", pow_hash: "proof" }),

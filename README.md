@@ -118,9 +118,8 @@ python3 scripts/paste.py --consent-all archive.zip
 cat archive.zip | python3 scripts/paste.py --consent-all --binary --filename archive.zip
 ```
 
-The default output is the paste URL on stdout; progress, the passcode/passphrase,
-and moderation warnings go to stderr. `--json` returns the full API response
-(including the authorization credentials) on stdout. Keep that response private. Unlisted
+The default output is the paste URL on stdout; progress and moderation warnings
+go to stderr. `--json` returns the full API response on stdout. Unlisted
 pastes stay outside the feed, but are not secret storage. AI-cleared text has a limited
 IP audience; unsupported or uncertain content is held for human review.
 
@@ -223,23 +222,7 @@ assessment are persisted first, so flagged content is never briefly exposed whil
 classification runs. The challenge is redeemed after a valid proof and current-price check, before
 inflation and moderation; unsuccessful admitted payloads still consume cost budget. If the server rejects
 a proof as invalid, expired, or already used, the browser requests one fresh
-challenge and solves it again before reporting an error. A successful response
-also includes a unique server-generated `passcode` and its equivalent `passphrase`.
-The passcode is 16 hex characters (eight random bytes); each byte indexes one of
-the 256 words in `public/wordlist.js`, producing an eight-word phrase. Only the
-passcode is stored server-side, in a private SQLite table with a uniqueness
-constraint. Neither credential appears in public reads, listings, staff metadata,
-R2 custom metadata, or moderation requests. These credentials have no expiry.
-Public reading continues to follow the existing moderation and sharing policy.
-
-The browser saves both credentials under `cp.codes.authorization.v1:<ID>` in
-local storage. Only the passphrase is displayed, as a compact two-row, four-column
-preformatted grid below the paste content, using eight asterisks per word until
-clicked (or activated with Enter or Space) to reveal it. Without a saved credential,
-the yellow padlock opens an authorization dialog. Anyone with either credential
-can permanently delete the paste. Keep a separate copy if browser storage may be
-cleared. Existing pastes without a passcode retain their read behavior and can
-still be deleted by staff; expired legacy deletion tokens cannot claim them.
+challenge and solves it again before reporting an error.
 
 `content_type` must be the client's resolved type: `plaintext`, `url`, `markdown`,
 `png`, `jpeg`, `webp`, `gif`, `mp3`, `mp4`, `javascript`, `typescript`, `python`, `java`, `json`, `html`, `css`, `shell`, `sql`,
@@ -271,28 +254,6 @@ are stored as null. Full metadata is retained in SQLite, not duplicated into R2'
 size-limited custom metadata, and is excluded from public paste, recent-upload and
 creation responses. Only the trusted edge IP is used for access admission. `GET /client-info` displays the values that
 would be retained for the current request.
-
-### `POST /api/paste/:id/authorize`
-
-Verify a credential before saving it in another browser. Accepts either
-`passcode` or `passphrase`, returning `{ "authorized": true, "id": "…" }`.
-Hex codes and phrases are case-insensitive; phrases accept whitespace or hyphens
-between words. Attempts are rate limited per IP. The endpoint does not change
-public reading or moderation state.
-
-### `DELETE /api/paste/:id`
-
-Delete a paste at any time by submitting either credential in the JSON body:
-
-```json
-{ "passcode": "<passcode returned by POST /api/paste>" }
-```
-
-Alternatively submit `{ "passphrase": "<eight-word phrase>" }`.
-The paste view shows a delete button when this browser has a saved passcode.
-Deletion removes the R2 body and
-sets the PasteIndex visibility to `deleted`; the paste metadata is retained for the
-audit trail.
 
 ### `POST /api/paste/:id/report`
 
@@ -407,8 +368,9 @@ Copying an image writes PNG image data to the clipboard, not its base64 text;
 JPEG/WebP/GIF images are converted at their original resolution. GIF animation is
 not copied. Image copying requires browser support and clipboard permission;
 otherwise save the displayed image instead. Text copying is unchanged.
-Content is always re-fetched/reauthorized on a new visit; only
-QR images remain cached. This prevents stale content-cache authorization bypasses. JSON metadata exposes `content_url`,
+The viewer fetches content using the endpoint's HTTP cache policy and removes
+legacy JavaScript content-cache entries while retaining cached QR images.
+Downloaded content can remain in client caches. JSON metadata exposes `content_url`,
 `content_encoding`, and both compressed and
 uncompressed lengths instead of embedding the plaintext content.
 
@@ -427,8 +389,6 @@ uncompressed lengths instead of embedding the plaintext content.
 | `GET /api/paste/CP………/content`                         | Exact stored gzip bytes (single file or bundle container) |
 | `GET /CP………/files/:name[?download]` | Decoded bundle file under the same access gate |
 | `GET /api/pastes?limit=40`                             | Recent uploads (newest first, preview, hit count, and PoW difficulty)                               |
-| `POST /api/paste/CP………/authorize`                      | Verify a passcode/passphrase before saving browser authorization                                    |
-| `DELETE /api/paste/CP………`                              | Delete using a passcode/passphrase at any time while retaining metadata                             |
 | `POST /api/paste/CP………/report`                         | Report suspected illegal content with an optional category and email                                |
 | `GET /admin/reports`                                   | Redirect to the review panel filtered to all reported pastes                                        |
 | `GET /admin/users`                                     | Staff account list                                                                                  |

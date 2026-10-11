@@ -2,7 +2,6 @@
  * Paste view page: fetch/decompress/render content and initialize paste actions.
  */
 
-import { storedPasscode, forgetAuthorization, initializePassphraseDisplay } from './authorization_storage.js?v=1';
 
 function loadMedia() { return import('./media.js?v=1'); }
 
@@ -540,65 +539,6 @@ function initializePasteCopy(contentPromise) {
 	});
 }
 
-function initializePasteDeletion() {
-	const host = document.getElementById("paste-delete");
-	const button = document.getElementById("delete-paste");
-	const status = document.getElementById("paste-action-status") ?? document.getElementById("delete-status");
-	if (
-		!(host instanceof HTMLElement) ||
-		!(button instanceof HTMLButtonElement) ||
-		!(status instanceof HTMLElement)
-	) {
-		return;
-	}
-
-	const cpCode = button.dataset.cpCode || "";
-	host.hidden = !storedPasscode(cpCode);
-
-	button.addEventListener("click", async () => {
-		const passcode = storedPasscode(cpCode);
-		if (!passcode) return;
-		if (!confirm(`Delete ${cpCode}? This cannot be undone.`)) return;
-		button.disabled = true;
-		showActionFeedback(status, 'Deleting…');
-		try {
-			const response = await fetch(`/api/paste/${encodeURIComponent(cpCode)}`, {
-				method: "DELETE",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ passcode }),
-			});
-			let result = null;
-			try {
-				result = await response.json();
-			} catch {
-				// Fall back to the HTTP status below.
-			}
-			if (!response.ok) {
-				throw new Error(result?.error || `delete failed (${response.status})`);
-			}
-			forgetAuthorization(cpCode);
-			removeCachedPasteContent(cpCode);
-			window.location.replace("/");
-		} catch (error) {
-			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
-			button.disabled = false;
-		}
-	});
-}
-
-function initializePasteAuthorization() {
-	const button = document.getElementById('authorize-paste');
-	if (!(button instanceof HTMLButtonElement)) return;
-	const passcode = storedPasscode(button.dataset.cpCode);
-	const saved = document.getElementById('saved-authorization');
-	button.hidden = Boolean(passcode);
-	if (saved) saved.hidden = !passcode;
-	if (passcode) {
-		const phrase = document.getElementById('saved-passphrase');
-		if (phrase) initializePassphraseDisplay(phrase, passcode);
-	}
-}
-
 function escapeHtml(value) {
 	return String(value).replace(/[&<>"']/g, character => ({
 		'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -619,8 +559,6 @@ function createPasteToolbar() {
       <button class="icon-action" type="button" id="copy-paste" data-cp-code="${id}" title="Copy content" aria-label="Copy content" disabled data-icon="copy"></button>
       <button class="icon-action" type="button" id="open-details" data-dialog="paste-details-dialog" aria-haspopup="dialog" aria-controls="paste-details-dialog" title="Paste details" aria-label="Paste details" data-icon="details"></button>
       <button class="icon-action report" type="button" id="open-report" data-dialog="report-dialog" aria-haspopup="dialog" aria-controls="report-dialog" title="Report paste" aria-label="Report paste" data-icon="report"></button>
-      <button class="icon-action authorize" type="button" id="authorize-paste" data-cp-code="${id}" data-dialog="authorization-dialog" aria-haspopup="dialog" aria-controls="authorization-dialog" title="Unlock / authorize paste" aria-label="Unlock / authorize paste" data-icon="lock"></button>
-      <div class="paste-delete" id="paste-delete" hidden><button type="button" class="icon-action danger" id="delete-paste" data-cp-code="${id}" title="Delete paste" aria-label="Delete paste" data-icon="delete"></button></div>
     </nav>`;
 }
 
@@ -631,7 +569,7 @@ function initializePasteDialogs(contentPromise) {
 			if (pending) return;
 			pending = true;
 			try {
-				const { openPasteDialog } = await import('./view_dialogs.js?v=1');
+				const { openPasteDialog } = await import('./view_dialogs.js?v=2');
 				openPasteDialog(button, { contentPromise, getAttachments: () => currentAttachments, showActionFeedback });
 			} catch {
 				const status = document.getElementById('paste-action-status');
@@ -658,6 +596,4 @@ document.getElementById('copy-link')?.addEventListener('click', async () => {
 
 const pasteContentPromise = initializePasteContent();
 initializePasteCopy(pasteContentPromise);
-initializePasteDeletion();
 initializePasteDialogs(pasteContentPromise);
-initializePasteAuthorization();
