@@ -124,7 +124,7 @@ test("default state, navigation, and effective challenge difficulty agree", asyn
 	assert.equal((await challenge()).difficulty, 7);
 	const response = await fetch("/admin/pow", { headers: auth() });
 	const html = await response.text();
-	assert.match(html, /href="\/admin\/pow" aria-current="page">PoW/);
+	assert.match(html, /<header><\/header>/);
 	assert.match(html, /Current difficulty for a base-size paste/);
 	assert.match(html, /name="minimum_difficulty_bits".*value="7"/);
 	assert.match(response.headers.get("content-security-policy"), /form-action 'self'/);

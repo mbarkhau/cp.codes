@@ -42,6 +42,18 @@ well, continuing through its importers. Server-generated URLs and preloads use
 application JS/CSS file is registered, client references agree with the registry,
 and both Worker asset routes apply the cache policy. No client build step is needed.
 
+The shared `public/style.css` and `public/site.js` files are imported as text by
+`src/ui.ts` during Worker bundling and embedded in each HTML response. Edit those
+public files directly; their contents are not duplicated in the template. The CSS
+is in the head, and the script initializes the parsed shell before page modules.
+
+Staff navigation is rendered by `site.js` from a readable, eight-hour cookie hint
+set after login and cleared on logout or a rejected staff session. It contains only
+`1`, never the session token. Public page headers do not authenticate requests;
+staff endpoints and paste access checks still use the HttpOnly session cookie.
+Changing the hint only changes which links appear. Existing sessions created
+before this hint was introduced gain it on their next login.
+
 Optional PoW tuning (also settable in `wrangler.jsonc` `vars`):
 
 |        Variable       | Default |                        Meaning                        |
@@ -249,7 +261,7 @@ approval**. Unlisted pastes use longer version 2 CP-Codes and stay outside the f
 Both use the same limited-sharing/moderation gates. Unlisted is not access authentication.
 
 For multi-file pastes, use the [`bundle-v1` container API](doc/REDESIGN.md#multi-file-api).
-The composer provides named files, main-document selection, safe previews and sibling references.
+The composer provides named files and main-document selection. Published pastes support sibling references.
 
 Each successful upload privately retains `cf-connecting-ip`, `x-real-ip`, and
 `cf-ipcountry`, plus Cloudflare's `asn`, `asOrganization`, `country`,
@@ -366,8 +378,16 @@ separate moderation consent notice discloses this third-party processing.
 
 ### Read
 
+Hit counts, audience IP persistence, traffic accounting, and access-log writes run
+in `waitUntil` background work after response-path reads finish. Responses use a
+hit-count snapshot that can lag the current request. Limited-sharing admission
+reserves audience slots and traffic budgets synchronously in memory before serving
+content, so concurrent requests include pending reservations. Background failures
+are logged without failing a served response; pending reservations can be lost if
+the Durable Object restarts before persistence finishes.
+
 A successful `GET` increments a paste's hit count only when it loads the content:
-raw responses count immediately, while an HTML view counts when its browser fetches
+raw responses count in the background, while an HTML view counts when its browser fetches
 the content endpoint. An approved URL paste instead returns `302 Found` from its
 canonical CP-Code path and increments the hit count with that redirect. Access-log
 entries record their timestamp, IP address, Cloudflare location fields, HTTP

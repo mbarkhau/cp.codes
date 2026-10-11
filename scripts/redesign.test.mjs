@@ -85,6 +85,38 @@ const textBundle = () => JSON.stringify({ format: 'bundle-v1', primary: 'readme.
 	{ name: 'hello.js', content_type: 'javascript', content: 'console.log("hello");' },
 ] });
 
+test('immutable content is cached privately for a year for GET and HEAD, including bundles', async () => {
+	for (const [id, extra] of [['CP000120', {}], ['CP000121', { bundle: true, content: textBundle() }]]) {
+		await seed(id, extra);
+		for (const approved of [false, true]) {
+			if (approved) await approve(id);
+			for (const method of ['GET', 'HEAD']) {
+				const response = await fetch(`/api/paste/${id}/content`, { method, headers: ipHeaders('192.0.2.1') });
+				assert.equal(response.status, 200);
+				assert.equal(response.headers.get('cache-control'), 'private, max-age=31536000, immutable');
+				assert.equal(response.headers.get('vary'), 'Cookie, Authorization');
+				if (method === 'GET') assert.equal(gunzipSync(Buffer.from(await response.arrayBuffer())).toString(), extra.content ?? 'Hello world');
+				else assert.equal(await response.text(), '');
+			}
+		}
+	}
+});
+
+test('unavailable content and authenticated hidden content remain uncached', async () => {
+	const id = 'CP000122'; await seed(id, { assessment: fixture('unsafe') });
+	for (const method of ['GET', 'HEAD']) {
+		for (const [path, headers, status] of [
+			[`/api/paste/${id}/content`, ipHeaders('192.0.2.1'), 404],
+			[`/api/paste/${id}/content`, staff, 200],
+			['/api/paste/CP000123/content', staff, 404],
+		]) {
+			const response = await fetch(path, { method, headers });
+			assert.equal(response.status, status);
+			assert.equal(response.headers.get('cache-control'), 'no-store, private');
+		}
+	}
+});
+
 test('short CP-Code difficulty doubles per consumed slot and saturates at the 16-ID capacity', () => {
 	assert.deepEqual([0, 1, 2, 16, 17].map(count => shortIdDifficultyBits(count, 1.5)), [0, 1.5, 3, 24, 25.5]);
 	assert.equal(SHORT_ID_CAPACITY, 16);
@@ -120,7 +152,9 @@ test('AI-cleared paste: uploader and three IPs; feed and forwarding headers cann
 	}
 	const headers = { ...ipHeaders('192.0.2.5'), 'x-real-ip': '192.0.2.1', 'x-forwarded-for': '192.0.2.1' };
 	for (const path of [`/${id}.txt`, `/api/paste/${id}`, `/api/paste/${id}/content`, `/${id}`]) {
-		assert.equal((await fetch(path, { headers })).status, 423, path);
+		const response = await fetch(path, { headers });
+		assert.equal(response.status, 423, path);
+		assert.equal(response.headers.get('cache-control'), 'no-store, private', path);
 	}
 	assert.equal((await fetch(`/${id}.txt`, { headers: ipHeaders('192.0.2.1') })).status, 200);
 	const review = await (await fetch('/api/admin/paste/' + id, { headers: staff })).json();
@@ -200,15 +234,17 @@ test('paste views omit extra labels and only show file navigation for multiple f
 			const html = await response.text();
 			assert.doesNotMatch(html, /<dialog\b|qr-cache-restored/);
 			assert.match(html, /data-dialog-metadata="/);
-			const themePosition = html.indexOf('src="/theme.js?');
-			const stylePosition = html.indexOf('href="/style.css?');
-			assert.ok(themePosition < stylePosition && stylePosition < html.indexOf('rel="preload"'));
+			const sitePosition = html.indexOf('<script src="/site.js?');
+			const stylePosition = html.indexOf('<link rel="stylesheet" href="/style.css?');
+			assert.ok(html.indexOf('rel="preload"') < stylePosition && stylePosition < html.indexOf('</head>'));
+			assert.ok(sitePosition > html.indexOf('<header>') && sitePosition < html.indexOf('src="/view.js?'));
 			const firstKilobyte = Buffer.from(html).subarray(0, 1024).toString();
 			for (const [hint] of html.matchAll(/<link rel="(?:modulepreload|preload)"[^>]*>/g)) {
 				assert.ok(firstKilobyte.includes(hint), 'Paste view hints stay within the first kilobyte');
 			}
 			assert.doesNotMatch(html, /policy-note|sharing-banner|selected-file-info/);
-			assert.doesNotMatch(html, /paste-toolbar|paste-actions|id="copy-link"|id="copy-paste"|id="open-report"/);
+			assert.match(html, /<div class="paste-toolbar"><\/div>/);
+			assert.doesNotMatch(html.replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, ''), /paste-actions|id="copy-link"|id="copy-paste"|id="open-report"/);
 			const rawUrl = path.startsWith('/admin/') ? `/admin/paste/${id}/raw` : `/${id}.${bundle ? 'md' : 'txt'}`;
 			assert.ok(html.includes(`data-raw-url="${rawUrl}"`));
 			assert.equal(html.includes('id="paste-file-nav"'), showNav, path);

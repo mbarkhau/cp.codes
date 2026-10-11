@@ -622,6 +622,14 @@ function storedPasteFromJson(value: string, id: string): StoredPaste {
  * Single DO keeps moderation decisions and body deletion ordering consistent.
  */
 export class PasteIndex extends DurableObject<Env> {
+	/** Reservations include requests whose background persistence has not run yet. */
+	private pendingSharing = new Map<string, {
+		escalated: string | null; requests: number; bytes: number;
+		owner_requests: number; owner_bytes: number;
+		owner_metadata_requests: number; audience_metadata_requests: number;
+		audience: Set<string>;
+	}>();
+
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		ctx.blockConcurrencyWhile(async () => {
@@ -1083,62 +1091,96 @@ export class PasteIndex extends DurableObject<Env> {
 			}));
 	}
 
-	/** Synchronous SQL admission is the authority, including concurrent first viewers.
-	 * No R2 reads or external I/O may occur before this decision. */
+	/** Reserve admission synchronously in memory, including concurrent first viewers.
+	 * Persistence is deferred by the request Worker until it has built its response. */
 	authorizeAccess(id: string, ip: string | null, bodyBytes: number, admit: boolean): SharingAccess {
 		const pasteId = id.toUpperCase();
-		return this.ctx.storage.transactionSync(() => {
-			const retained = this.getRetainedPaste(pasteId);
-			const denied = (state: SharingAccess['state'], reason: string): SharingAccess => ({ allowed: false, state, reason });
-			if (!retained || retained.moderation.visibility === 'deleted') return denied('missing', 'Paste not found');
-			const { moderation, automoderation, metadata } = retained;
-			if (moderation.visibility !== 'visible') return denied('review', 'This paste is awaiting a moderation decision');
-			if (moderation.decision === 'approved') return { allowed: true, state: 'approved', reason: 'Human-approved for public access' };
-			if (moderation.decision !== 'unreviewed' || !automoderation || initialModeration(automoderation).visibility !== 'visible') {
-				return denied('review', 'Human review is required');
-			}
-			if (!ip) return denied('review', 'An edge IP identity is required for limited sharing');
-			this.ctx.storage.sql.exec('INSERT OR IGNORE INTO paste_sharing (paste_id) VALUES (?)', pasteId);
-			const row = this.ctx.storage.sql.exec<{ escalated: string | null; requests: number; bytes: number; owner_requests: number; owner_bytes: number }>(
-				'SELECT * FROM paste_sharing WHERE paste_id = ?', pasteId).one();
-			const owner = ip === metadata.upload_metadata['cf-connecting-ip'];
-			const audience = this.ctx.storage.sql.exec<{ ip: string }>('SELECT ip FROM paste_audience WHERE paste_id = ?', pasteId).toArray();
-			const escalate = (reason: string) => {
-				this.ctx.storage.sql.exec('UPDATE paste_sharing SET escalated = COALESCE(escalated, ?) WHERE paste_id = ?', reason, pasteId);
-				this.ctx.storage.sql.exec('UPDATE paste_automoderation SET requires_review = 1, reviewed_at_ms = NULL, reviewed_by = NULL WHERE paste_id = ?', pasteId);
-				return denied('review', reason);
+		const retained = this.getRetainedPaste(pasteId);
+		const denied = (state: SharingAccess['state'], reason: string): SharingAccess => ({ allowed: false, state, reason });
+		if (!retained || retained.moderation.visibility === 'deleted') return denied('missing', 'Paste not found');
+		const { moderation, automoderation, metadata } = retained;
+		if (moderation.visibility !== 'visible') return denied('review', 'This paste is awaiting a moderation decision');
+		if (moderation.decision === 'approved') return { allowed: true, state: 'approved', reason: 'Human-approved for public access' };
+		if (moderation.decision !== 'unreviewed' || !automoderation || initialModeration(automoderation).visibility !== 'visible') {
+			return denied('review', 'Human review is required');
+		}
+		if (!ip) return denied('review', 'An edge IP identity is required for limited sharing');
+		let row = this.pendingSharing.get(pasteId);
+		if (!row) {
+			const stored = this.ctx.storage.sql.exec<{ escalated: string | null; requests: number; bytes: number; owner_requests: number; owner_bytes: number }>(
+				'SELECT * FROM paste_sharing WHERE paste_id = ?', pasteId).toArray()[0];
+			const counts = this.ctx.storage.sql.exec<{ owner_requests: number; audience_requests: number }>(
+				'SELECT * FROM paste_metadata_requests WHERE paste_id = ?', pasteId).toArray()[0];
+			row = {
+				escalated: stored?.escalated ?? null, requests: stored?.requests ?? 0, bytes: stored?.bytes ?? 0,
+				owner_requests: stored?.owner_requests ?? 0, owner_bytes: stored?.owner_bytes ?? 0,
+				owner_metadata_requests: counts?.owner_requests ?? 0, audience_metadata_requests: counts?.audience_requests ?? 0,
+				audience: new Set(this.ctx.storage.sql.exec<{ ip: string }>('SELECT ip FROM paste_audience WHERE paste_id = ?', pasteId).toArray().map(viewer => viewer.ip)),
 			};
-			if (!owner) {
-				if (row.escalated) return denied('review', row.escalated);
-				if (!audience.some(viewer => viewer.ip === ip)) {
-					if (!admit) return denied('limited', 'Open the paste to join its limited audience');
-					if (audience.length >= SHARING_LIMITS.recipients) return escalate('The limited audience is full; human review is required for wider sharing');
-					this.ctx.storage.sql.exec('INSERT INTO paste_audience (paste_id, ip) VALUES (?, ?)', pasteId, ip);
-				}
-				if (bodyBytes > 0 && (row.requests >= SHARING_LIMITS.requests || row.bytes + bodyBytes > SHARING_LIMITS.bytes)) {
-					return escalate('The sharing traffic budget was reached; human review is required');
-				}
-			} else if (bodyBytes > 0 && (row.owner_requests >= SHARING_LIMITS.ownerRequests || row.owner_bytes + bodyBytes > SHARING_LIMITS.ownerBytes)) {
-				return escalate('The uploader traffic budget was reached; human review is required');
+			// HEAD must remain read-only and cannot leave an unflushed reservation.
+			if (admit) this.pendingSharing.set(pasteId, row);
+		}
+		const owner = ip === metadata.upload_metadata['cf-connecting-ip'];
+		const escalate = (reason: string) => {
+			row.escalated ??= reason;
+			return denied('review', reason);
+		};
+		if (!owner) {
+			if (row.escalated) return denied('review', row.escalated);
+			if (!row.audience.has(ip)) {
+				if (!admit) return denied('limited', 'Open the paste to join its limited audience');
+				if (row.audience.size >= SHARING_LIMITS.recipients) return escalate('The limited audience is full; human review is required for wider sharing');
+				row.audience.add(ip);
 			}
-			if (admit && bodyBytes === 0) {
-				this.ctx.storage.sql.exec('INSERT OR IGNORE INTO paste_metadata_requests (paste_id) VALUES (?)', pasteId);
-				const counts = this.ctx.storage.sql.exec<{ owner_requests: number; audience_requests: number }>('SELECT * FROM paste_metadata_requests WHERE paste_id = ?', pasteId).one();
-				if ((owner ? counts.owner_requests >= 500 : counts.audience_requests >= 250)) return escalate('The metadata request budget was reached; human review is required');
-				this.ctx.storage.sql.exec(owner ? 'UPDATE paste_metadata_requests SET owner_requests = owner_requests + 1 WHERE paste_id = ?'
-					: 'UPDATE paste_metadata_requests SET audience_requests = audience_requests + 1 WHERE paste_id = ?', pasteId);
+			if (bodyBytes > 0 && (row.requests >= SHARING_LIMITS.requests || row.bytes + bodyBytes > SHARING_LIMITS.bytes)) {
+				return escalate('The sharing traffic budget was reached; human review is required');
 			}
-			if (bodyBytes > 0) {
-				this.ctx.storage.sql.exec(owner
-					? 'UPDATE paste_sharing SET owner_requests = owner_requests + 1, owner_bytes = owner_bytes + ? WHERE paste_id = ?'
-					: 'UPDATE paste_sharing SET requests = requests + 1, bytes = bytes + ? WHERE paste_id = ?', bodyBytes, pasteId);
+		} else if (bodyBytes > 0 && (row.owner_requests >= SHARING_LIMITS.ownerRequests || row.owner_bytes + bodyBytes > SHARING_LIMITS.ownerBytes)) {
+			return escalate('The uploader traffic budget was reached; human review is required');
+		}
+		if (admit && bodyBytes === 0) {
+			if ((owner ? row.owner_metadata_requests >= 500 : row.audience_metadata_requests >= 250)) return escalate('The metadata request budget was reached; human review is required');
+			if (owner) row.owner_metadata_requests++; else row.audience_metadata_requests++;
+		}
+		if (bodyBytes > 0) {
+			if (owner) { row.owner_requests++; row.owner_bytes += bodyBytes; }
+			else { row.requests++; row.bytes += bodyBytes; }
+		}
+		return { allowed: true, state: row.escalated ? 'owner-review' : 'limited', reason: row.escalated ?? 'AI-cleared for uploader and three other IPs; not publicly approved' };	}
+
+	/** Called via Worker waitUntil; no tracking writes are awaited by a response. */
+	completeRead(id: string, access: PasteAccess | null, incrementHit: boolean): void {
+		const pasteId = id.toUpperCase();
+		const pending = this.pendingSharing.get(pasteId);
+		this.ctx.storage.transactionSync(() => {
+			if (pending) {
+				this.ctx.storage.sql.exec(`INSERT INTO paste_sharing (paste_id, escalated, requests, bytes, owner_requests, owner_bytes)
+					VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (paste_id) DO UPDATE SET
+					escalated = excluded.escalated, requests = excluded.requests, bytes = excluded.bytes,
+					owner_requests = excluded.owner_requests, owner_bytes = excluded.owner_bytes`,
+					pasteId, pending.escalated, pending.requests, pending.bytes, pending.owner_requests, pending.owner_bytes);
+				this.ctx.storage.sql.exec(`INSERT INTO paste_metadata_requests (paste_id, owner_requests, audience_requests)
+					VALUES (?, ?, ?) ON CONFLICT (paste_id) DO UPDATE SET
+					owner_requests = excluded.owner_requests, audience_requests = excluded.audience_requests`,
+					pasteId, pending.owner_metadata_requests, pending.audience_metadata_requests);
+				for (const ip of pending.audience) this.ctx.storage.sql.exec('INSERT OR IGNORE INTO paste_audience (paste_id, ip) VALUES (?, ?)', pasteId, ip);
+				if (pending.escalated && this.getModeration(pasteId).decision === 'unreviewed') this.ctx.storage.sql.exec('UPDATE paste_automoderation SET requires_review = 1, reviewed_at_ms = NULL, reviewed_by = NULL WHERE paste_id = ?', pasteId);
 			}
-			return { allowed: true, state: row.escalated ? 'owner-review' : 'limited', reason: row.escalated ?? 'AI-cleared for uploader and three other IPs; not publicly approved' };
+			if (access) this.recordAccess(pasteId, access, incrementHit && this.getModeration(pasteId).visibility !== 'deleted');
+			else if (incrementHit && this.getModeration(pasteId).visibility !== 'deleted') this.incrementHitCount(pasteId);
 		});
+		// A failed transaction keeps reservations for the next background flush.
+		if (pending) this.pendingSharing.delete(pasteId);
+	}
+
+	getReadState(id: string): { moderation: PasteModeration; hit_count: number } {
+		return { moderation: this.getModeration(id), hit_count: this.getHitCount(id) };
 	}
 
 	getSharing(id: string): { escalated: string | null; recipients: number; requests: number; bytes: number } {
 		const pasteId = id.toUpperCase();
+		const pending = this.pendingSharing.get(pasteId);
+		if (pending) return { escalated: pending.escalated, recipients: pending.audience.size, requests: pending.requests, bytes: pending.bytes };
 		const row = this.ctx.storage.sql.exec<{ escalated: string | null; requests: number; bytes: number }>('SELECT escalated, requests, bytes FROM paste_sharing WHERE paste_id = ?', pasteId).toArray()[0];
 		const recipients = this.ctx.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM paste_audience WHERE paste_id = ?', pasteId).one().count;
 		return { escalated: row?.escalated ?? null, recipients, requests: row?.requests ?? 0, bytes: row?.bytes ?? 0 };

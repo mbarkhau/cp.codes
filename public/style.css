@@ -285,7 +285,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #paste-content { background: var(--content-bg); color: var(--content-fg); }
 .paste-loading { margin: 0; padding: 1.25rem; color: var(--muted); }
 .paste-load-error { margin: 0; padding: 1.25rem; color: var(--danger); white-space: pre-wrap; }
-.paste-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; align-items: center; margin-top: 1rem; }
+.paste-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; align-items: center; min-height: 2.75rem; margin-top: 1rem; }
 .paste-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; align-items: center; }
 .paste-toolbar .paste-action-status { position: relative; min-width: 0; height: 2.75rem; margin: 0; }
 .paste-toolbar .paste-action-status > span { position: absolute; inset: 0; display: flex; justify-content: flex-end; align-items: center; }
@@ -293,7 +293,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-feedback { opacity: 1; transition: none; }
 .action-feedback.is-fading { opacity: 0; transition: opacity 1s ease; }
 @media (max-width: 640px) {
-  .paste-toolbar { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+  .paste-toolbar { grid-template-columns: minmax(0, 1fr); grid-template-rows: 1.5rem minmax(2.75rem, auto); gap: 0.35rem; }
   .paste-toolbar .paste-action-status { height: 1.5rem; }
 }
 @media (prefers-reduced-motion: reduce) { .action-feedback.is-fading { transition: none; } }
@@ -491,8 +491,6 @@ pre.paste {
 .editor-toolbar button.editor-remove svg { display: block; flex: none; }
 .editor-toolbar .editor-toggle svg { width: 20px; height: 20px; }
 .editor-toolbar button.editor-remove svg { width: 24px; height: 24px; }
-#preview-file { background: var(--surface); color: var(--fg); border-color: var(--border); }
-#preview-file:hover:not(:disabled), #preview-file[aria-pressed="true"] { background: var(--card); color: var(--fg); border-color: var(--focus); }
 button.editor-remove { color: var(--danger); background: transparent; border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
 button.editor-remove:hover:not(:disabled) { color: #fff; background: var(--danger); border-color: var(--danger); }
 button.editor-remove svg { color: currentColor; }
@@ -504,7 +502,6 @@ button.editor-remove svg { color: currentColor; }
 .editor-card .cm-gutters, .editor-card .cm-gutter, .editor-card .cm-activeLineGutter { background: var(--content-bg); color: var(--muted); border: 0; }
 .editor-card .cm-lineNumbers, .editor-card .cm-lineNumbers .cm-gutterElement { min-width: 3ch; text-align: right; }
 .editor-fallback { display: block; width: 100%; border: 0; border-radius: 0; resize: vertical; }
-.editor-preview { width: 100%; margin-top: .85rem; padding: .85rem 0 0; border-top: 1px solid var(--border); }
 .composer-actions { display: flex; justify-content: space-between; gap: .75rem; align-items: center; margin-top: .85rem; }
 .composer-actions > div { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 [hidden] { display: none !important; }

@@ -1,7 +1,8 @@
 import { WORDLIST } from './wordlist.js?v=1';
+import { AUTHORIZATION_STORAGE_PREFIX } from './authorization_storage.js?v=1';
+export { AUTHORIZATION_STORAGE_PREFIX, storedPasscode, forgetAuthorization, initializePassphraseDisplay } from './authorization_storage.js?v=1';
 
 export const PASSPHRASE_WORD_COUNT = 8;
-export const AUTHORIZATION_STORAGE_PREFIX = 'cp.codes.authorization.v1:';
 const wordIndices = new Map(WORDLIST.map((word, index) => [word, index]));
 
 /** Accept either the hexadecimal passcode or its equivalent wordlist phrase. */
@@ -27,27 +28,6 @@ export function formatPassphraseGrid(value) {
 	return [words.slice(0, 4), words.slice(4)].map(row => row.map(word => word.padEnd(width)).join('').trimEnd()).join('\n');
 }
 
-export function initializePassphraseDisplay(element, value) {
-	const phrase = formatPassphraseGrid(value);
-	const label = element.getAttribute('aria-label') || 'Passphrase';
-	element.textContent = Array.from({ length: 2 }, () => Array(4).fill('********').join('  ')).join('\n');
-	element.setAttribute('role', 'button');
-	element.setAttribute('tabindex', '0');
-	element.setAttribute('aria-label', 'Reveal passphrase');
-	element.title = 'Click to reveal passphrase';
-	const reveal = () => {
-		element.textContent = phrase;
-		element.setAttribute('aria-label', label);
-		element.removeAttribute('role');
-		element.removeAttribute('tabindex');
-		element.title = 'Passphrase';
-	};
-	element.addEventListener('click', reveal, { once: true });
-	element.addEventListener('keydown', event => {
-		if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); reveal(); }
-	});
-}
-
 export function storeAuthorization(id, value) {
 	const passcode = normalizePasscode(value);
 	if (!passcode) return false;
@@ -56,14 +36,4 @@ export function storeAuthorization(id, value) {
 			JSON.stringify({ passcode, passphrase: passphraseFromPasscode(passcode) }));
 		return true;
 	} catch { return false; }
-}
-
-export function storedPasscode(id) {
-	try {
-		return normalizePasscode(JSON.parse(localStorage.getItem(`${AUTHORIZATION_STORAGE_PREFIX}${id.toUpperCase()}`) || 'null')?.passcode);
-	} catch { return null; }
-}
-
-export function forgetAuthorization(id) {
-	try { localStorage.removeItem(`${AUTHORIZATION_STORAGE_PREFIX}${id.toUpperCase()}`); } catch { /* Storage is optional. */ }
 }

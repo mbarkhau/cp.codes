@@ -1,13 +1,13 @@
 /**
- * Paste view page: fetch/decompress/render content, deletion controls, and QR.
+ * Paste view page: fetch/decompress/render content and initialize paste actions.
  */
 
-import { MEDIA_MIME_TYPES, mediaTypeFromBytes } from "./media.js?v=1";
-import { normalizePasscode, initializePassphraseDisplay, storedPasscode, storeAuthorization, forgetAuthorization } from './authorization.js?v=1';
+import { storedPasscode, forgetAuthorization, initializePassphraseDisplay } from './authorization_storage.js?v=1';
+
+function loadMedia() { return import('./media.js?v=1'); }
 
 const PASTE_CACHE_KEY = "cp.codes.paste.v1";
 const PASTE_CACHE_MAX_ENTRIES = 10;
-const QR_DISPLAY_SCALE = 6;
 
 async function writeToClipboard(text) {
 	if (typeof navigator.clipboard?.writeText === "function") {
@@ -166,6 +166,7 @@ function renderUrl(content) {
 }
 
 async function renderMedia(content, contentType) {
+	const { MEDIA_MIME_TYPES, mediaTypeFromBytes } = await loadMedia();
 	const match = /^data:(image\/(?:png|jpeg|webp|gif)|audio\/mpeg|video\/mp4);base64,([A-Za-z0-9+/]+={0,2})$/.exec(content.trim());
 	const kind = contentType === "mp3" || contentType === "mp4" ? "media" : "image";
 	if (!match || match[1] !== MEDIA_MIME_TYPES[contentType] || match[2].length % 4 !== 0) {
@@ -228,87 +229,18 @@ async function renderPasteContent(content, contentType, attachments) {
 	return pre;
 }
 
-function readPasteCache() {
+function removeCachedPasteContent(cpCode) {
 	try {
-		const parsed = JSON.parse(localStorage.getItem(PASTE_CACHE_KEY) || "[]");
-		if (!Array.isArray(parsed)) return [];
-		return parsed
-			.filter((entry) => typeof entry === "object" && entry !== null && typeof entry.id === "string")
-			.slice(-PASTE_CACHE_MAX_ENTRIES);
-	} catch {
-		return [];
-	}
-}
-
-function writePasteCache(entries) {
-	try {
-		localStorage.setItem(PASTE_CACHE_KEY, JSON.stringify(entries));
-		return true;
-	} catch {
-		// localStorage can be unavailable or full; viewing the paste still succeeds.
-		return false;
-	}
-}
-
-function findCachedPaste(entries, cpCode) {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		if (entries[index].id === cpCode) return entries[index];
-	}
-	return null;
-}
-
-function updateCachedPaste(cpCode, patch) {
-	let entries = readPasteCache();
-	const existing = findCachedPaste(entries, cpCode) || { id: cpCode };
-	entries = entries.filter((entry) => entry.id !== cpCode);
-	entries.push({ ...existing, ...patch, id: cpCode });
-	entries = entries.slice(-PASTE_CACHE_MAX_ENTRIES);
-	if (writePasteCache(entries)) return;
-
-	// Prefer the new/updated entry if the browser's storage quota is tight.
-	while (entries.length > 1) {
-		entries.shift();
-		if (writePasteCache(entries)) return;
-	}
-}
-
-function removeCachedPastePart(cpCode, part) {
-	let entries = readPasteCache();
-	const entry = findCachedPaste(entries, cpCode);
-	if (!entry || !(part in entry)) return;
-	entries = entries.filter((candidate) => candidate.id !== cpCode);
-	delete entry[part];
-	if (entry.content || entry.qr) entries.push(entry);
-	writePasteCache(entries);
-}
-
-async function getCachedPasteContent(cpCode, contentType, expectedByteLength, expectedHash) {
-	const entries = readPasteCache();
-	const entry = findCachedPaste(entries, cpCode);
-	const cached = entry?.content;
-	if (
-		typeof cached !== "object" || cached === null ||
-		cached.contentType !== contentType || cached.byteLength !== expectedByteLength ||
-		cached.sha256 !== expectedHash || typeof cached.value !== "string"
-	) {
-		return null;
-	}
-
-	const bytes = new TextEncoder().encode(cached.value);
-	const validLength = bytes.byteLength === expectedByteLength;
-	const validHash = !/^[0-9a-f]{64}$/.test(expectedHash) ||
-		await sha256Hex(bytes) === expectedHash;
-	if (validLength && validHash) return cached.value;
-
-	// Drop corrupt content while retaining a valid QR image for this paste.
-	removeCachedPastePart(cpCode, "content");
-	return null;
-}
-
-function cachePasteContent(cpCode, contentType, byteLength, sha256, content) {
-	updateCachedPaste(cpCode, {
-		content: { contentType, byteLength, sha256, value: content },
-	});
+		const parsed = JSON.parse(localStorage.getItem(PASTE_CACHE_KEY) || '[]');
+		if (!Array.isArray(parsed)) return;
+		const entries = parsed.filter(entry => entry && typeof entry.id === 'string').slice(-PASTE_CACHE_MAX_ENTRIES);
+		const entry = entries.findLast(entry => entry.id === cpCode);
+		if (!entry || !('content' in entry)) return;
+		delete entry.content;
+		const retained = entries.filter(candidate => candidate.id !== cpCode);
+		if (entry.qr) retained.push(entry);
+		localStorage.setItem(PASTE_CACHE_KEY, JSON.stringify(retained));
+	} catch { /* Legacy cache cleanup is optional. */ }
 }
 
 function updateHitCount(response) {
@@ -337,6 +269,7 @@ async function readPasteBytes(stream, maximum) {
 let currentCopyContent = null;
 let currentCopyFile = null;
 let currentCopyType = null;
+let currentAttachments = new Map();
 
 function fileFragment(name) {
 	return `#file-${encodeURIComponent(name)}`;
@@ -384,26 +317,20 @@ async function renderBundle(container, host) {
 	if (bundle.format !== 'bundle-v1' || !Array.isArray(bundle.files) || bundle.files.length > 16) throw new Error('Invalid bundle');
 	const attachments = new Map();
 	const urls = [];
+	const media = bundle.files.some(file => ['png', 'jpeg', 'webp', 'gif', 'mp3', 'mp4'].includes(file.content_type))
+		? await loadMedia() : null;
 	for (const file of bundle.files) {
 		let blob;
 		const image = ['png', 'jpeg', 'webp', 'gif'].includes(file.content_type);
-		if (MEDIA_MIME_TYPES[file.content_type]) {
+		if (media?.MEDIA_MIME_TYPES[file.content_type]) {
 			const match = /^data:([^;]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(file.content);
-			if (!match || match[1] !== MEDIA_MIME_TYPES[file.content_type]) throw new Error('Invalid media file');
+			if (!match || match[1] !== media.MEDIA_MIME_TYPES[file.content_type]) throw new Error('Invalid media file');
 			blob = new Blob([Uint8Array.from(atob(match[2]), c => c.charCodeAt(0))], { type: match[1] });
 		} else blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
 		const url = URL.createObjectURL(blob); urls.push(url);
 		attachments.set(file.name, { url, image, link: fileFragment(file.name) });
 	}
-	for (const section of document.querySelectorAll('.paste-file-metadata')) {
-		const attachment = attachments.get(section.dataset.fileName);
-		const download = section.querySelector('.file-download');
-		const links = section.querySelector('.paste-file-links');
-		if (!attachment || !(download instanceof HTMLAnchorElement) || !(links instanceof HTMLElement)) continue;
-		download.href = attachment.url;
-		download.download = section.dataset.fileName;
-		links.hidden = false;
-	}
+	currentAttachments = attachments;
 	addEventListener('pagehide', (event) => { if (!event.persisted) urls.forEach(url => URL.revokeObjectURL(url)); }, { once: true });
 	const primary = bundle.files.find(file => file.name === bundle.primary);
 	if (!primary) throw new Error('Primary file missing');
@@ -432,7 +359,9 @@ async function renderBundle(container, host) {
 			raw.title = `View raw content: ${file.name}`;
 			raw.setAttribute('aria-label', raw.title);
 		}
-		void import('./highlight.js?v=2').then(({ highlightPaste }) => highlightPaste(rendered)).catch(() => {});
+		if (rendered.querySelector("pre > code[class*='language-']:not(.language-plaintext)")) {
+			void import('./highlight.js?v=2').then(({ highlightPaste }) => highlightPaste(rendered)).catch(() => {});
+		}
 	}
 	const choose = (file, updateFragment = false) => {
 		void select(file, updateFragment).catch(error => {
@@ -491,8 +420,9 @@ async function initializePasteContent() {
 
 		// Staff-only bodies must not enter the public viewer's persistent cache.
 		const staffReview = host.dataset.staffReview === "true";
-		// Always reauthorize at the server. A persistent content cache would let a
-		// browser bypass a later restriction or traffic escalation.
+		// Fetch respects the endpoint's HTTP cache policy. Server access checks run
+		// only when a request reaches the server; clients can retain downloaded
+		// content, which cannot be revoked.
 		let content = null;
 		const cacheHit = content !== null;
 		if (!cacheHit) {
@@ -537,12 +467,12 @@ async function initializePasteContent() {
 		host.setAttribute("aria-busy", "false");
 		if (copyButton instanceof HTMLButtonElement) copyButton.disabled = false;
 		// Enhance after plaintext is visible; CDN availability must not block the viewer.
-		if (rendered.querySelector("code[class*='language-']")) {
+		if (rendered.querySelector("pre > code[class*='language-']:not(.language-plaintext)")) {
 			void import("./highlight.js?v=2")
 				.then(({ highlightPaste }) => highlightPaste(rendered))
 				.catch((error) => console.warn("Syntax highlighting unavailable", error));
 		}
-		removeCachedPastePart(cpCode, 'content');
+		removeCachedPasteContent(cpCode);
 		return content;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -647,7 +577,7 @@ function initializePasteDeletion() {
 				throw new Error(result?.error || `delete failed (${response.status})`);
 			}
 			forgetAuthorization(cpCode);
-			removeCachedPastePart(cpCode, 'content');
+			removeCachedPasteContent(cpCode);
 			window.location.replace("/");
 		} catch (error) {
 			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
@@ -658,12 +588,8 @@ function initializePasteDeletion() {
 
 function initializePasteAuthorization() {
 	const button = document.getElementById('authorize-paste');
-	const form = document.getElementById('authorization-form');
-	const input = document.getElementById('authorization-input');
-	const status = document.getElementById('authorization-status');
-	if (!(button instanceof HTMLButtonElement) || !(form instanceof HTMLFormElement)) return;
-	const id = button.dataset.cpCode;
-	const passcode = storedPasscode(id);
+	if (!(button instanceof HTMLButtonElement)) return;
+	const passcode = storedPasscode(button.dataset.cpCode);
 	const saved = document.getElementById('saved-authorization');
 	button.hidden = Boolean(passcode);
 	if (saved) saved.hidden = !passcode;
@@ -671,62 +597,6 @@ function initializePasteAuthorization() {
 		const phrase = document.getElementById('saved-passphrase');
 		if (phrase) initializePassphraseDisplay(phrase, passcode);
 	}
-	const authorize = async (value) => {
-		const normalized = normalizePasscode(value);
-		if (!normalized) throw new Error('Enter an eight-word passphrase.');
-		const response = await fetch(`/api/paste/${id}/authorize`, {
-			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ passcode: normalized }),
-		});
-		const result = await response.json();
-		if (!response.ok) throw new Error(result.error?.replace(/\bpasscode(?: or passphrase)?\b/gi, 'passphrase') || 'Authorization failed');
-		if (!storeAuthorization(id, normalized)) throw new Error('Authorization succeeded, but browser storage is unavailable. Enable it or use the deletion API with your credential.');
-		location.reload();
-	};
-	form.addEventListener('submit', async (event) => {
-		event.preventDefault();
-		const submit = form.querySelector('button[type="submit"]');
-		submit.disabled = true; status.textContent = 'Authorizing…';
-		try { await authorize(input.value); }
-		catch (error) { status.textContent = error.message; submit.disabled = false; }
-	});
-}
-
-function initializePasteReport() {
-	const form = document.getElementById("report-paste");
-	const status = document.getElementById("report-status");
-	if (!(form instanceof HTMLFormElement) || !(status instanceof HTMLElement)) return;
-	const cpCode = form.dataset.cpCode || "";
-	const submit = form.querySelector('button[type="submit"]');
-
-	form.addEventListener("submit", async (event) => {
-		event.preventDefault();
-		if (!form.reportValidity()) return;
-		if (submit instanceof HTMLButtonElement) submit.disabled = true;
-		showActionFeedback(status, 'Submitting…');
-		const data = new FormData(form);
-		try {
-			const response = await fetch(`/api/paste/${encodeURIComponent(cpCode)}/report`, {
-				method: "POST",
-				headers: { "content-type": "application/json", accept: "application/json" },
-				body: JSON.stringify({
-					category: String(data.get("category") || "") || null,
-					email: String(data.get("email") || "") || null,
-				}),
-			});
-			let result = null;
-			try {
-				result = await response.json();
-			} catch {
-				// Fall back to the HTTP status below.
-			}
-			if (!response.ok) throw new Error(result?.error || `report failed (${response.status})`);
-			form.reset();
-			showActionFeedback(status, 'Report submitted. Thank you.', 'ok');
-		} catch (error) {
-			showActionFeedback(status, error instanceof Error ? error.message : String(error), 'err');
-			if (submit instanceof HTMLButtonElement) submit.disabled = false;
-		}
-	});
 }
 
 function escapeHtml(value) {
@@ -738,11 +608,10 @@ function escapeHtml(value) {
 
 function createPasteToolbar() {
 	const host = document.getElementById('paste-content');
-	const head = host?.closest('.paste-main')?.querySelector('.paste-head');
-	if (!(head instanceof HTMLElement)) return;
+	const toolbar = host?.closest('.paste-main')?.querySelector('.paste-head > .paste-toolbar');
+	if (!(toolbar instanceof HTMLElement)) return;
 	const id = escapeHtml(host.dataset.cpCode);
-	head.insertAdjacentHTML('beforeend', `
-  <div class="paste-toolbar">
+	toolbar.innerHTML = `
     <p class="status paste-action-status" role="status" aria-atomic="true"><span><span class="action-feedback" id="paste-action-status"></span></span></p>
     <nav class="paste-actions" aria-label="Paste actions">
       <button class="icon-action" type="button" id="copy-link" title="Copy link" aria-label="Copy link" data-icon="link"></button>
@@ -752,95 +621,22 @@ function createPasteToolbar() {
       <button class="icon-action report" type="button" id="open-report" data-dialog="report-dialog" aria-haspopup="dialog" aria-controls="report-dialog" title="Report paste" aria-label="Report paste" data-icon="report"></button>
       <button class="icon-action authorize" type="button" id="authorize-paste" data-cp-code="${id}" data-dialog="authorization-dialog" aria-haspopup="dialog" aria-controls="authorization-dialog" title="Unlock / authorize paste" aria-label="Unlock / authorize paste" data-icon="lock"></button>
       <div class="paste-delete" id="paste-delete" hidden><button type="button" class="icon-action danger" id="delete-paste" data-cp-code="${id}" title="Delete paste" aria-label="Delete paste" data-icon="delete"></button></div>
-    </nav>
-  </div>`);
+    </nav>`;
 }
 
-function appendPasteDialog(id, headingId, heading, closeLabel, content, className = '') {
-	const template = document.createElement('template');
-	template.innerHTML = `<dialog class="paste-dialog ${className}" id="${id}" aria-labelledby="${headingId}">
-  <div class="paste-dialog-head"><h2 id="${headingId}">${heading}</h2><button type="button" class="icon-action" data-close-dialog title="${closeLabel}" aria-label="${closeLabel}" data-icon="close"></button></div>
-  ${content}
-</dialog>`;
-	document.body.append(template.content);
-}
-
-function fileMetadataSection(paste) {
-	const files = paste.files ?? [{ name: paste.filename ?? 'Unnamed file', content_type: paste.content_type, byte_length: paste.byte_length, sha256: paste.sha256 }];
-	return `<section><h3>File metadata</h3>${files.map(file => `<section class="paste-file-metadata" data-file-name="${escapeHtml(file.name)}">
-      <h3>${escapeHtml(file.name)}${file.name === paste.primary ? ' · Main' : ''}</h3>
-      <dl class="pow-fields"><dt>Content type</dt><dd>${escapeHtml(file.content_type)}</dd><dt>Size</dt><dd>${escapeHtml(file.byte_length)} bytes</dd><dt>SHA-256</dt><dd>${escapeHtml(file.sha256)}</dd></dl>
-      ${paste.format === 'bundle-v1' ? `<div class="paste-file-links" hidden><a class="icon-action file-download" aria-label="Download ${escapeHtml(file.name)}" title="Download file" data-icon="download"></a><a class="icon-action" href="/${escapeHtml(paste.id)}/files/${escapeHtml(encodeURIComponent(file.name))}" aria-label="Permalink to ${escapeHtml(file.name)}" title="File permalink" data-icon="link"></a></div>` : ''}
-    </section>`).join('')}</section>`;
-}
-
-function proofOfWorkSection(proof) {
-	if (!proof) return '<section><h3>Upload proof &amp; integrity</h3><p class="meta">No proof-of-work details available.</p></section>';
-	const fields = [
-		['Algorithm', 'SHA-256'], ['Difficulty', `${proof.difficulty} leading zero bits`],
-		['Result', `${proof.leading_zero_bits} leading zero bits`], ['Solution', proof.solution],
-		['Challenge', proof.challenge_id], ['Server nonce', proof.nonce], ['Proof hash', proof.pow_hash],
-	];
-	return `<section><h3>Upload proof &amp; integrity</h3><dl class="pow-fields">${fields.map(([label, value]) => `<dt>${label}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section>`;
-}
-
-function createPasteDialogs() {
-	if (document.getElementById('authorize-paste')) {
-		appendPasteDialog('authorization-dialog', 'authorization-heading', 'Authorize paste', 'Close authorization', `
-  <form class="authorization-form" id="authorization-form">
-    <label for="authorization-input">Passphrase</label>
-    <input id="authorization-input" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="256" required />
-    <button type="submit">Authorize</button>
-    <p class="status" id="authorization-status" role="status"></p>
-  </form>`);
-	}
-	const host = document.getElementById('paste-content');
-	if (!(host instanceof HTMLElement)) return;
-	const paste = {
-		...JSON.parse(host.dataset.dialogMetadata),
-		id: host.dataset.cpCode, content_type: host.dataset.contentType,
-		byte_length: Number(host.dataset.byteLength), sha256: host.dataset.sha256,
-		format: host.dataset.format, primary: host.dataset.primary,
-	};
-	const id = escapeHtml(paste.id);
-	appendPasteDialog('report-dialog', 'report-heading', 'Report suspected illegal content', 'Close report', `
-  <form id="report-paste" data-cp-code="${id}">
-    <label><span>Reason (optional)</span><select name="category">
-      <option value="">Select a reason</option>
-      ${paste.report_categories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join('')}
-    </select></label>
-    <label><span>Email (optional)</span><input type="email" name="email" maxlength="${escapeHtml(paste.max_report_email_chars)}" autocomplete="email" /></label>
-    <button type="submit">Submit report</button>
-    <p class="status" role="status" aria-atomic="true"><span class="action-feedback" id="report-status"></span></p>
-  </form>`, 'report-panel');
-	const qrHref = `https://cp.codes/${paste.id.toUpperCase()}`;
-	appendPasteDialog('paste-details-dialog', 'paste-details-heading', 'Paste details', 'Close details', `
-  <div class="paste-details">
-    <aside class="paste-qr" aria-label="QR code">
-      <a id="qr-link" href="${escapeHtml(qrHref)}" title="${escapeHtml(qrHref)}">
-        <img id="qr" data-cp-code="${id}" width="53" height="53" decoding="sync" draggable="false" alt="QR code linking to ${id}" />
-      </a>
-    </aside>
-    <div>
-      <dl class="pow-fields"><dt>Paste</dt><dd>${id}</dd><dt>Created</dt><dd>${escapeHtml(paste.created_at)}</dd><dt>Total size</dt><dd>${paste.byte_length} bytes</dd><dt>Stored size</dt><dd>${escapeHtml(paste.compressed_byte_length)} bytes (${escapeHtml(paste.content_encoding)})</dd><dt>Container SHA-256</dt><dd>${escapeHtml(paste.sha256)}</dd><dt>Visibility</dt><dd>${paste.unlisted ? 'Unlisted' : 'Listed'}</dd></dl>
-      ${fileMetadataSection(paste)}
-      ${proofOfWorkSection(paste.proof_of_work)}
-    </div>
-  </div>`);
-}
-
-function initializePasteDialogs() {
+function initializePasteDialogs(contentPromise) {
 	for (const button of document.querySelectorAll('[data-dialog]')) {
-		const dialog = document.getElementById(button.dataset.dialog);
-		if (!(dialog instanceof HTMLDialogElement)) continue;
-		button.addEventListener('click', () => dialog.showModal());
-	}
-	for (const dialog of document.querySelectorAll('dialog.paste-dialog')) {
-		dialog.querySelector('[data-close-dialog]')?.addEventListener('click', () => dialog.close());
-		dialog.addEventListener('click', (event) => {
-			if (event.target !== dialog) return;
-			const bounds = dialog.getBoundingClientRect();
-			if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+		let pending = false;
+		button.addEventListener('click', async () => {
+			if (pending) return;
+			pending = true;
+			try {
+				const { openPasteDialog } = await import('./view_dialogs.js?v=1');
+				openPasteDialog(button, { contentPromise, getAttachments: () => currentAttachments, showActionFeedback });
+			} catch {
+				const status = document.getElementById('paste-action-status');
+				if (status) showActionFeedback(status, 'Could not open dialog. Reload the page and try again.', 'err');
+			} finally { pending = false; }
 		});
 	}
 }
@@ -860,201 +656,8 @@ document.getElementById('copy-link')?.addEventListener('click', async () => {
 	}
 });
 
-createPasteDialogs();
 const pasteContentPromise = initializePasteContent();
 initializePasteCopy(pasteContentPromise);
 initializePasteDeletion();
-initializePasteReport();
-initializePasteDialogs();
+initializePasteDialogs(pasteContentPromise);
 initializePasteAuthorization();
-
-function firstPaintTiming(timestamp) {
-	const firstPaint = performance.getEntriesByName("first-paint", "paint")[0];
-	if (!firstPaint) return "";
-	const delta = timestamp - firstPaint.startTime;
-	return delta >= 0
-		? `; ${delta.toFixed(2)} ms since first paint`
-		: `; ${Math.abs(delta).toFixed(2)} ms before first paint`;
-}
-
-function waitForImage(image) {
-	if (image.complete) {
-		return image.naturalWidth > 0
-			? Promise.resolve()
-			: Promise.reject(new Error("Cached QR image could not be decoded"));
-	}
-	if (typeof image.decode === "function") return image.decode();
-	return new Promise((resolve, reject) => {
-		image.addEventListener("load", resolve, { once: true });
-		image.addEventListener("error", () => reject(new Error("QR image could not be decoded")), { once: true });
-	});
-}
-
-function blobToDataUrl(blob) {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.addEventListener("load", () => resolve(reader.result), { once: true });
-		reader.addEventListener("error", () => reject(reader.error ?? new Error("Could not encode QR PNG")), { once: true });
-		reader.readAsDataURL(blob);
-	});
-}
-
-async function canvasToPngDataUrl(canvas) {
-	if (canvas instanceof HTMLCanvasElement) return canvas.toDataURL("image/png");
-	const blob = await canvas.convertToBlob({ type: "image/png" });
-	const dataUrl = await blobToDataUrl(blob);
-	if (typeof dataUrl !== "string") throw new Error("Could not encode QR PNG");
-	return dataUrl;
-}
-
-function describePng(dataUrl) {
-	try {
-		const prefix = "data:image/png;base64,";
-		if (!dataUrl.startsWith(prefix)) throw new Error("not a base64 PNG data URL");
-
-		const base64 = dataUrl.slice(prefix.length);
-		const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-		const sizeBytes = Math.floor(base64.length * 3 / 4) - padding;
-		const header = atob(base64.slice(0, 40));
-		const byteAt = (offset) => header.charCodeAt(offset);
-		const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-		if (header.length < 26 || !signature.every((byte, offset) => byteAt(offset) === byte)) {
-			throw new Error("invalid PNG header");
-		}
-		if (header.slice(12, 16) !== "IHDR") throw new Error("missing PNG IHDR");
-
-		const uint32At = (offset) =>
-			byteAt(offset) * 0x1000000 + byteAt(offset + 1) * 0x10000 + byteAt(offset + 2) * 0x100 + byteAt(offset + 3);
-		const width = uint32At(16);
-		const height = uint32At(20);
-		const bitDepth = byteAt(24);
-		const colorType = byteAt(25);
-		const colorFormats = {
-			0: ["grayscale", 1],
-			2: ["RGB", 3],
-			3: ["indexed color", 1],
-			4: ["grayscale + alpha", 2],
-			6: ["RGBA", 4],
-		};
-		const [colorFormat, channels] = colorFormats[colorType] ?? [`unknown type ${colorType}`, 1];
-		const formattedSize = sizeBytes >= 1024
-			? `${sizeBytes} bytes (${(sizeBytes / 1024).toFixed(2)} KiB)`
-			: `${sizeBytes} bytes`;
-
-		return `PNG metadata: size ${formattedSize}; resolution ${width}×${height} px; ` +
-			`color depth ${bitDepth * channels} bits/pixel (${bitDepth}-bit ${colorFormat})`;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		return `PNG metadata unavailable: ${message}`;
-	}
-}
-
-function setQrDimensions(image, width, height) {
-	const displayWidth = width * QR_DISPLAY_SCALE;
-	const displayHeight = height * QR_DISPLAY_SCALE;
-	image.width = width;
-	image.height = height;
-	image.style.width = `${displayWidth}px`;
-	image.style.height = `${displayHeight}px`;
-	const host = image.closest(".paste-qr");
-	if (host instanceof HTMLElement) {
-		host.style.setProperty("--qr-w", `${displayWidth}px`);
-		host.style.setProperty("--qr-h", `${displayHeight}px`);
-	}
-}
-
-function cacheQrImage(cpCode, width, height, dataUrl) {
-	updateCachedPaste(cpCode, {
-		qr: { width, height, dataUrl },
-	});
-}
-
-function restoreCachedQrImage(image) {
-	try {
-		for (const key of ['cp.codes.qr.v1', 'cp.codes.qr.png.v1', 'cp.codes.qr.png.v2',
-			'cp.codes.qr.png.v3', 'cp.codes.qr.png.v4', 'cp.codes.qr.png.v5', 'cp.codes.content.v1']) {
-			localStorage.removeItem(key);
-		}
-		const qr = findCachedPaste(readPasteCache(), image.dataset.cpCode)?.qr;
-		if (!qr || !Number.isInteger(qr.width) || qr.width < 1 || qr.width > 512 ||
-			!Number.isInteger(qr.height) || qr.height < 1 || qr.height > 512 ||
-			typeof qr.dataUrl !== 'string' || !qr.dataUrl.startsWith('data:image/png;base64,') ||
-			qr.dataUrl.length > 200000) return;
-		setQrDimensions(image, qr.width, qr.height);
-		image.src = qr.dataUrl;
-		image.dataset.qrCacheHit = 'true';
-		performance.mark('qr-cache-restored');
-	} catch {
-		// Storage can be unavailable; initializeQrImage will render a fresh PNG.
-	}
-}
-
-async function initializeQrImage(image) {
-	const cpCode = image.dataset.cpCode || "";
-	const link = document.getElementById("qr-link");
-
-	restoreCachedQrImage(image);
-	// A valid cached PNG avoids rendering and encoding the QR again.
-	if (image.dataset.qrCacheHit === "true") {
-		try {
-			await waitForImage(image);
-			const readyAt = performance.now();
-			const restored = performance.getEntriesByName("qr-cache-restored").at(-1);
-			const decodeMs = restored ? `; decoded in ${(readyAt - restored.startTime).toFixed(2)} ms` : "";
-			console.info(
-				`[QR] Cached PNG image ready at ${readyAt.toFixed(2)} ms since navigation start` +
-					`${decodeMs}${firstPaintTiming(readyAt)}; ${describePng(image.currentSrc || image.src)}`,
-			);
-			return;
-		} catch {
-			delete image.dataset.qrCacheHit;
-			image.removeAttribute("src");
-			removeCachedPastePart(cpCode, "qr");
-		}
-	}
-
-	try {
-		const moduleLoadStartedAt = performance.now();
-		const { renderCpCodeToCanvas } = await import("./qr_text.js?v=2");
-		const renderStartedAt = performance.now();
-		const offscreen = typeof OffscreenCanvas === "function"
-			? new OffscreenCanvas(1, 1)
-			: document.createElement("canvas");
-		const info = renderCpCodeToCanvas(offscreen, cpCode);
-		const qrRenderedAt = performance.now();
-		const dataUrl = await canvasToPngDataUrl(offscreen);
-		const pngEncodedAt = performance.now();
-
-		const href = info.href || `https://cp.codes/${cpCode.toUpperCase()}`;
-		image.title = href;
-		if (link instanceof HTMLAnchorElement) {
-			link.href = href;
-			link.title = href;
-		}
-		setQrDimensions(image, info.width, info.height);
-		cacheQrImage(cpCode, info.width, info.height, dataUrl);
-		image.src = dataUrl;
-		await waitForImage(image);
-		const imageReadyAt = performance.now();
-
-		console.info(
-			`[QR] PNG image ready in ${(imageReadyAt - renderStartedAt).toFixed(2)} ms ` +
-				`(module load ${(renderStartedAt - moduleLoadStartedAt).toFixed(2)} ms; ` +
-				`QR render ${(qrRenderedAt - renderStartedAt).toFixed(2)} ms; ` +
-				`PNG encode ${(pngEncodedAt - qrRenderedAt).toFixed(2)} ms; ` +
-				`image decode ${(imageReadyAt - pngEncodedAt).toFixed(2)} ms; ` +
-				`${imageReadyAt.toFixed(2)} ms since navigation start${firstPaintTiming(imageReadyAt)}); ` +
-				describePng(dataUrl),
-		);
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		const fallback = Object.assign(document.createElement("p"), {
-			className: "status err",
-			textContent: `QR failed: ${message}`,
-		});
-		(link ?? image).replaceWith(fallback);
-	}
-}
-
-const image = document.getElementById("qr");
-if (image instanceof HTMLImageElement) void initializeQrImage(image);

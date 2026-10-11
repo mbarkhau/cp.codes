@@ -35,13 +35,15 @@ function browser({ decodeFails = false } = {}) {
 	const context = vm.createContext({
 		atob, Uint8Array, TextDecoder, Image, contentEl, filenameEl,
 		MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType,
+		loadMedia: async () => ({ MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType }),
+		loadAuthorization: async () => ({ storeAuthorization: () => true }),
 		document: { getElementById: () => null, createElement: (tag) => tag === "img" ? new Image() : new Element(tag) },
 		bytesToBase64: (bytes) => Buffer.from(bytes).toString("base64"),
 		updateBytes: () => Buffer.byteLength(contentEl.value),
 		setStatus: (...args) => statuses.push(args),
 	});
 	vm.runInContext(app.slice(app.indexOf("async function verifyDecodableImage"), app.indexOf('fileButtonEl.addEventListener("click"')), context);
-	vm.runInContext(viewer.slice(viewer.indexOf("async function renderMedia"), viewer.indexOf("function readPasteCache")), context);
+	vm.runInContext(viewer.slice(viewer.indexOf("async function renderMedia"), viewer.indexOf("function removeCachedPasteContent")), context);
 	return { context, contentEl, filenameEl, statuses, get decodeCalls() { return decodeCalls; } };
 }
 

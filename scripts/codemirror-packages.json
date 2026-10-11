@@ -1,0 +1,166 @@
+{
+  "@codemirror/autocomplete": {
+    "version": "6.20.3",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/commands": {
+    "version": "6.11.1",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-cpp": {
+    "version": "6.0.3",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-css": {
+    "version": "6.3.1",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-go": {
+    "version": "6.0.1",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-html": {
+    "version": "6.4.12",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-java": {
+    "version": "6.0.2",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-javascript": {
+    "version": "6.2.5",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-json": {
+    "version": "6.0.2",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-markdown": {
+    "version": "6.5.2",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-php": {
+    "version": "6.0.2",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-python": {
+    "version": "6.2.1",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-rust": {
+    "version": "6.0.2",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-sql": {
+    "version": "6.10.0",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-xml": {
+    "version": "6.1.0",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lang-yaml": {
+    "version": "6.1.3",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/language": {
+    "version": "6.13.1",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/lint": {
+    "version": "6.9.7",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/state": {
+    "version": "6.7.6",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/streamparser": {
+    "version": "6.0.0",
+    "entry": "dist/index.js"
+  },
+  "@codemirror/view": {
+    "version": "6.43.14",
+    "entry": "dist/index.js"
+  },
+  "@lezer/common": {
+    "version": "1.5.3",
+    "entry": "dist/index.js"
+  },
+  "@lezer/cpp": {
+    "version": "1.1.6",
+    "entry": "dist/index.js"
+  },
+  "@lezer/css": {
+    "version": "1.3.9",
+    "entry": "dist/index.js"
+  },
+  "@lezer/go": {
+    "version": "1.0.1",
+    "entry": "dist/index.js"
+  },
+  "@lezer/highlight": {
+    "version": "1.2.5",
+    "entry": "dist/index.js"
+  },
+  "@lezer/html": {
+    "version": "1.3.13",
+    "entry": "dist/index.js"
+  },
+  "@lezer/java": {
+    "version": "1.1.5",
+    "entry": "dist/index.js"
+  },
+  "@lezer/javascript": {
+    "version": "1.5.6",
+    "entry": "dist/index.js"
+  },
+  "@lezer/json": {
+    "version": "1.0.3",
+    "entry": "dist/index.js"
+  },
+  "@lezer/lr": {
+    "version": "1.4.11",
+    "entry": "dist/index.js"
+  },
+  "@lezer/markdown": {
+    "version": "1.8.0",
+    "entry": "dist/index.js"
+  },
+  "@lezer/php": {
+    "version": "1.0.6",
+    "entry": "dist/index.js"
+  },
+  "@lezer/python": {
+    "version": "1.1.19",
+    "entry": "dist/index.js"
+  },
+  "@lezer/rust": {
+    "version": "1.0.3",
+    "entry": "dist/index.js"
+  },
+  "@lezer/xml": {
+    "version": "1.0.6",
+    "entry": "dist/index.js"
+  },
+  "@lezer/yaml": {
+    "version": "1.0.4",
+    "entry": "dist/index.js"
+  },
+  "@marijn/find-cluster-break": {
+    "version": "1.0.4",
+    "entry": "src/index.js"
+  },
+  "crelt": {
+    "version": "1.0.7",
+    "entry": "index.js"
+  },
+  "style-mod": {
+    "version": "4.1.4",
+    "entry": "src/style-mod.js"
+  },
+  "w3c-keyname": {
+    "version": "2.2.8",
+    "entry": "index.js"
+  }
+}

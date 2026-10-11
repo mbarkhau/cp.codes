@@ -1,0 +1,377 @@
+{
+  "imports": {
+    "@codemirror/autocomplete": "/lib/codemirror/@codemirror/autocomplete@6.20.3/dist/index.js",
+    "@codemirror/commands": "/lib/codemirror/@codemirror/commands@6.11.1/dist/index.js",
+    "@codemirror/lang-cpp": "/lib/codemirror/@codemirror/lang-cpp@6.0.3/dist/index.js",
+    "@codemirror/lang-css": "/lib/codemirror/@codemirror/lang-css@6.3.1/dist/index.js",
+    "@codemirror/lang-go": "/lib/codemirror/@codemirror/lang-go@6.0.1/dist/index.js",
+    "@codemirror/lang-html": "/lib/codemirror/@codemirror/lang-html@6.4.12/dist/index.js",
+    "@codemirror/lang-java": "/lib/codemirror/@codemirror/lang-java@6.0.2/dist/index.js",
+    "@codemirror/lang-javascript": "/lib/codemirror/@codemirror/lang-javascript@6.2.5/dist/index.js",
+    "@codemirror/lang-json": "/lib/codemirror/@codemirror/lang-json@6.0.2/dist/index.js",
+    "@codemirror/lang-markdown": "/lib/codemirror/@codemirror/lang-markdown@6.5.2/dist/index.js",
+    "@codemirror/lang-php": "/lib/codemirror/@codemirror/lang-php@6.0.2/dist/index.js",
+    "@codemirror/lang-python": "/lib/codemirror/@codemirror/lang-python@6.2.1/dist/index.js",
+    "@codemirror/lang-rust": "/lib/codemirror/@codemirror/lang-rust@6.0.2/dist/index.js",
+    "@codemirror/lang-sql": "/lib/codemirror/@codemirror/lang-sql@6.10.0/dist/index.js",
+    "@codemirror/lang-xml": "/lib/codemirror/@codemirror/lang-xml@6.1.0/dist/index.js",
+    "@codemirror/lang-yaml": "/lib/codemirror/@codemirror/lang-yaml@6.1.3/dist/index.js",
+    "@codemirror/language": "/lib/codemirror/@codemirror/language@6.13.1/dist/index.js",
+    "@codemirror/lint": "/lib/codemirror/@codemirror/lint@6.9.7/dist/index.js",
+    "@codemirror/state": "/lib/codemirror/@codemirror/state@6.7.6/dist/index.js",
+    "@codemirror/streamparser": "/lib/codemirror/@codemirror/streamparser@6.0.0/dist/index.js",
+    "@codemirror/view": "/lib/codemirror/@codemirror/view@6.43.14/dist/index.js",
+    "@lezer/common": "/lib/codemirror/@lezer/common@1.5.3/dist/index.js",
+    "@lezer/cpp": "/lib/codemirror/@lezer/cpp@1.1.6/dist/index.js",
+    "@lezer/css": "/lib/codemirror/@lezer/css@1.3.9/dist/index.js",
+    "@lezer/go": "/lib/codemirror/@lezer/go@1.0.1/dist/index.js",
+    "@lezer/highlight": "/lib/codemirror/@lezer/highlight@1.2.5/dist/index.js",
+    "@lezer/html": "/lib/codemirror/@lezer/html@1.3.13/dist/index.js",
+    "@lezer/java": "/lib/codemirror/@lezer/java@1.1.5/dist/index.js",
+    "@lezer/javascript": "/lib/codemirror/@lezer/javascript@1.5.6/dist/index.js",
+    "@lezer/json": "/lib/codemirror/@lezer/json@1.0.3/dist/index.js",
+    "@lezer/lr": "/lib/codemirror/@lezer/lr@1.4.11/dist/index.js",
+    "@lezer/markdown": "/lib/codemirror/@lezer/markdown@1.8.0/dist/index.js",
+    "@lezer/php": "/lib/codemirror/@lezer/php@1.0.6/dist/index.js",
+    "@lezer/python": "/lib/codemirror/@lezer/python@1.1.19/dist/index.js",
+    "@lezer/rust": "/lib/codemirror/@lezer/rust@1.0.3/dist/index.js",
+    "@lezer/xml": "/lib/codemirror/@lezer/xml@1.0.6/dist/index.js",
+    "@lezer/yaml": "/lib/codemirror/@lezer/yaml@1.0.4/dist/index.js",
+    "@marijn/find-cluster-break": "/lib/codemirror/@marijn/find-cluster-break@1.0.4/src/index.js",
+    "crelt": "/lib/codemirror/crelt@1.0.7/index.js",
+    "style-mod": "/lib/codemirror/style-mod@4.1.4/src/style-mod.js",
+    "w3c-keyname": "/lib/codemirror/w3c-keyname@2.2.8/index.js"
+  },
+  "sources": {
+    "@codemirror/autocomplete": {
+      "version": "6.20.3",
+      "entry": "dist/index.js",
+      "integrity": "sha512-tlosUqb+3BbxCxZdu4tKeRghPFC+QM7q4X5YhKV2eCmPG+1r2F3f4AaSz5sCrFqUtX4Jh20VFTKecl16MgiV9g==",
+      "tarball": "https://registry.npmjs.org/@codemirror/autocomplete/-/autocomplete-6.20.3.tgz",
+      "license": "/lib/codemirror/@codemirror/autocomplete@6.20.3/LICENSE"
+    },
+    "@codemirror/commands": {
+      "version": "6.11.1",
+      "entry": "dist/index.js",
+      "integrity": "sha512-O/4hG3SC1YwcmQ0d2UVNDs+AsaNWd1iHVxbTeEBuqH+6bExAiPK3iS/BvpY6rZGURALv4ZD3sIgcCmRvw3ehBg==",
+      "tarball": "https://registry.npmjs.org/@codemirror/commands/-/commands-6.11.1.tgz",
+      "license": "/lib/codemirror/@codemirror/commands@6.11.1/LICENSE"
+    },
+    "@codemirror/lang-cpp": {
+      "version": "6.0.3",
+      "entry": "dist/index.js",
+      "integrity": "sha512-URM26M3vunFFn9/sm6rzqrBzDgfWuDixp85uTY49wKudToc2jTHUrKIGGKs+QWND+YLofNNZpxcNGRynFJfvgA==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-cpp/-/lang-cpp-6.0.3.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-cpp@6.0.3/LICENSE"
+    },
+    "@codemirror/lang-css": {
+      "version": "6.3.1",
+      "entry": "dist/index.js",
+      "integrity": "sha512-kr5fwBGiGtmz6l0LSJIbno9QrifNMUusivHbnA1H6Dmqy4HZFte3UAICix1VuKo0lMPKQr2rqB+0BkKi/S3Ejg==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-css/-/lang-css-6.3.1.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-css@6.3.1/LICENSE"
+    },
+    "@codemirror/lang-go": {
+      "version": "6.0.1",
+      "entry": "dist/index.js",
+      "integrity": "sha512-7fNvbyNylvqCphW9HD6WFnRpcDjr+KXX/FgqXy5H5ZS0eC5edDljukm/yNgYkwTsgp2busdod50AOTIy6Jikfg==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-go/-/lang-go-6.0.1.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-go@6.0.1/LICENSE"
+    },
+    "@codemirror/lang-html": {
+      "version": "6.4.12",
+      "entry": "dist/index.js",
+      "integrity": "sha512-pw2ReWKUqSkbvh76RAT4NYxiogRu+PWkR2ukAwO9uOgrm8uipkzjtKKtNpyeAQwHOqxEeSvAXZ6vr3AfyB9y/w==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-html/-/lang-html-6.4.12.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-html@6.4.12/LICENSE"
+    },
+    "@codemirror/lang-java": {
+      "version": "6.0.2",
+      "entry": "dist/index.js",
+      "integrity": "sha512-m5Nt1mQ/cznJY7tMfQTJchmrjdjQ71IDs+55d1GAa8DGaB8JXWsVCkVT284C3RTASaY43YknrK2X3hPO/J3MOQ==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-java/-/lang-java-6.0.2.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-java@6.0.2/LICENSE"
+    },
+    "@codemirror/lang-javascript": {
+      "version": "6.2.5",
+      "entry": "dist/index.js",
+      "integrity": "sha512-zD4e5mS+50htS7F+TYjBPsiIFGanfVqg4HyUz6WNFikgOPf2BgKlx+TQedI1w6n/IqRBVBbBWmGFdLB/7uxO4A==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-javascript/-/lang-javascript-6.2.5.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-javascript@6.2.5/LICENSE"
+    },
+    "@codemirror/lang-json": {
+      "version": "6.0.2",
+      "entry": "dist/index.js",
+      "integrity": "sha512-x2OtO+AvwEHrEwR0FyyPtfDUiloG3rnVTSZV1W8UteaLL8/MajQd8DpvUb2YVzC+/T18aSDv0H9mu+xw0EStoQ==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-json/-/lang-json-6.0.2.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-json@6.0.2/LICENSE"
+    },
+    "@codemirror/lang-markdown": {
+      "version": "6.5.2",
+      "entry": "dist/index.js",
+      "integrity": "sha512-AwBOdkWYuA//WcM0xO5PfHPUcmz/O2i5o0Nsg1U69SII/loCJlFI1Romd9xp2HYb1kYJRGZotyqRghuHH5n8Kw==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-markdown/-/lang-markdown-6.5.2.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-markdown@6.5.2/LICENSE"
+    },
+    "@codemirror/lang-php": {
+      "version": "6.0.2",
+      "entry": "dist/index.js",
+      "integrity": "sha512-ZKy2v1n8Fc8oEXj0Th0PUMXzQJ0AIR6TaZU+PbDHExFwdu+guzOA4jmCHS1Nz4vbFezwD7LyBdDnddSJeScMCA==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-php/-/lang-php-6.0.2.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-php@6.0.2/LICENSE"
+    },
+    "@codemirror/lang-python": {
+      "version": "6.2.1",
+      "entry": "dist/index.js",
+      "integrity": "sha512-IRjC8RUBhn9mGR9ywecNhB51yePWCGgvHfY1lWN/Mrp3cKuHr0isDKia+9HnvhiWNnMpbGhWrkhuWOc09exRyw==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-python/-/lang-python-6.2.1.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-python@6.2.1/LICENSE"
+    },
+    "@codemirror/lang-rust": {
+      "version": "6.0.2",
+      "entry": "dist/index.js",
+      "integrity": "sha512-EZaGjCUegtiU7kSMvOfEZpaCReowEf3yNidYu7+vfuGTm9ow4mthAparY5hisJqOHmJowVH3Upu+eJlUji6qqA==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-rust/-/lang-rust-6.0.2.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-rust@6.0.2/LICENSE"
+    },
+    "@codemirror/lang-sql": {
+      "version": "6.10.0",
+      "entry": "dist/index.js",
+      "integrity": "sha512-6ayPkEd/yRw0XKBx5uAiToSgGECo/GY2NoJIHXIIQh1EVwLuKoU8BP/qK0qH5NLXAbtJRLuT73hx7P9X34iO4w==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-sql/-/lang-sql-6.10.0.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-sql@6.10.0/LICENSE"
+    },
+    "@codemirror/lang-xml": {
+      "version": "6.1.0",
+      "entry": "dist/index.js",
+      "integrity": "sha512-3z0blhicHLfwi2UgkZYRPioSgVTo9PV5GP5ducFH6FaHy0IAJRg+ixj5gTR1gnT/glAIC8xv4w2VL1LoZfs+Jg==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-xml/-/lang-xml-6.1.0.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-xml@6.1.0/LICENSE"
+    },
+    "@codemirror/lang-yaml": {
+      "version": "6.1.3",
+      "entry": "dist/index.js",
+      "integrity": "sha512-AZ8DJBuXGVHybpBQhmZtgew5//4hv3tdkXnr3vDmOUMJRuB6vn/uuwtmTOTlqEaQFg3hQSVeA90NmvIQyUV6FQ==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lang-yaml/-/lang-yaml-6.1.3.tgz",
+      "license": "/lib/codemirror/@codemirror/lang-yaml@6.1.3/LICENSE"
+    },
+    "@codemirror/language": {
+      "version": "6.13.1",
+      "entry": "dist/index.js",
+      "integrity": "sha512-zfvU2r3TyylQLMj/te+5CnQ0rSqZi8B1oTCBbQkagcLW4Xc6imab6qN+pEJhsuNOLaJqiRyBXp9UhWA1DhVvDw==",
+      "tarball": "https://registry.npmjs.org/@codemirror/language/-/language-6.13.1.tgz",
+      "license": "/lib/codemirror/@codemirror/language@6.13.1/LICENSE"
+    },
+    "@codemirror/lint": {
+      "version": "6.9.7",
+      "entry": "dist/index.js",
+      "integrity": "sha512-28/+iWLYxKxsvGYhSYL7zaCZqLz5+FFFDq9tVsvGv9kv8RY4fFAchJ5WX9M3YrrRlTIsECjsXPqeNgnSmNP2dg==",
+      "tarball": "https://registry.npmjs.org/@codemirror/lint/-/lint-6.9.7.tgz",
+      "license": "/lib/codemirror/@codemirror/lint@6.9.7/LICENSE"
+    },
+    "@codemirror/state": {
+      "version": "6.7.6",
+      "entry": "dist/index.js",
+      "integrity": "sha512-kAz+AncRtKuIknedxT1bq4XwXv4UowhbkHU1myPrtVb/jZtImWuV5BXzv5vK6i3kYACsdiZiQKFQQ5Mq7elW8w==",
+      "tarball": "https://registry.npmjs.org/@codemirror/state/-/state-6.7.6.tgz",
+      "license": "/lib/codemirror/@codemirror/state@6.7.6/LICENSE"
+    },
+    "@codemirror/streamparser": {
+      "version": "6.0.0",
+      "entry": "dist/index.js",
+      "integrity": "sha512-JTFPF6xrfjt0mnfGPgzcLiMwYmvIyNaoizp8BYzv8FE8KrT6GBGDZ190rtt+O7Wke3gG/MFHyiY9YGNeimof4w==",
+      "tarball": "https://registry.npmjs.org/@codemirror/streamparser/-/streamparser-6.0.0.tgz",
+      "license": "/lib/codemirror/@codemirror/streamparser@6.0.0/LICENSE"
+    },
+    "@codemirror/view": {
+      "version": "6.43.14",
+      "entry": "dist/index.js",
+      "integrity": "sha512-hC45YnmJNR1rz42OF57BLoQNFMV12/13drnvibDsR2quNDmldcb4WvYVV81hFQg56i9lcqQMEDqilhX2QDcGQQ==",
+      "tarball": "https://registry.npmjs.org/@codemirror/view/-/view-6.43.14.tgz",
+      "license": "/lib/codemirror/@codemirror/view@6.43.14/LICENSE"
+    },
+    "@lezer/common": {
+      "version": "1.5.3",
+      "entry": "dist/index.js",
+      "integrity": "sha512-H0iErY4e43LpXbYDyBci5W4v/RwTgGV3YzYOlJPiGZ8RY8w51kVE+xLn1tg3Z6UmSfyETvtsUK3r7YsgDQEI7Q==",
+      "tarball": "https://registry.npmjs.org/@lezer/common/-/common-1.5.3.tgz",
+      "license": "/lib/codemirror/@lezer/common@1.5.3/LICENSE"
+    },
+    "@lezer/cpp": {
+      "version": "1.1.6",
+      "entry": "dist/index.js",
+      "integrity": "sha512-vh9gWWJOXFVY8HBHK3Twzq8MgwG2iN4GSyzBP9sCGTe37P15x2R14VaBQk0VA0ezTRN1KHYBBsHhvpGZ2Xy/pA==",
+      "tarball": "https://registry.npmjs.org/@lezer/cpp/-/cpp-1.1.6.tgz",
+      "license": "/lib/codemirror/@lezer/cpp@1.1.6/LICENSE"
+    },
+    "@lezer/css": {
+      "version": "1.3.9",
+      "entry": "dist/index.js",
+      "integrity": "sha512-ZmzgvTOBdJWGIsY/ItAfN7UW8DV802oZG+jeG6E508SwEzz5YhuAajptpWPICvIyqYAD2+VjMdOS40GgGkyEOQ==",
+      "tarball": "https://registry.npmjs.org/@lezer/css/-/css-1.3.9.tgz",
+      "license": "/lib/codemirror/@lezer/css@1.3.9/LICENSE"
+    },
+    "@lezer/go": {
+      "version": "1.0.1",
+      "entry": "dist/index.js",
+      "integrity": "sha512-xToRsYxwsgJNHTgNdStpcvmbVuKxTapV0dM0wey1geMMRc9aggoVyKgzYp41D2/vVOx+Ii4hmE206kvxIXBVXQ==",
+      "tarball": "https://registry.npmjs.org/@lezer/go/-/go-1.0.1.tgz",
+      "license": "/lib/codemirror/@lezer/go@1.0.1/LICENSE"
+    },
+    "@lezer/highlight": {
+      "version": "1.2.5",
+      "entry": "dist/index.js",
+      "integrity": "sha512-O1GMVKgtf5YspFaRzpmqkVgMtIk2HG9uMAbH6wdAIdNh3TVzCsch/+cRi+6l2//UGDKe6NB9BW3cvuR5ezMQ0w==",
+      "tarball": "https://registry.npmjs.org/@lezer/highlight/-/highlight-1.2.5.tgz",
+      "license": "/lib/codemirror/@lezer/highlight@1.2.5/LICENSE"
+    },
+    "@lezer/html": {
+      "version": "1.3.13",
+      "entry": "dist/index.js",
+      "integrity": "sha512-oI7n6NJml729m7pjm9lvLvmXbdoMoi2f+1pwSDJkl9d68zGr7a9Btz8NdHTGQZtW2DA25ybeuv/SyDb9D5tseg==",
+      "tarball": "https://registry.npmjs.org/@lezer/html/-/html-1.3.13.tgz",
+      "license": "/lib/codemirror/@lezer/html@1.3.13/LICENSE"
+    },
+    "@lezer/java": {
+      "version": "1.1.5",
+      "entry": "dist/index.js",
+      "integrity": "sha512-JppTd1iKHpeNlLYw/Zl8JX7zSY5HqAzK4zZ05lpn8l8Sk7Fo5KAKiDiMiezKoT5lfeC2xZf8HeKp1tSctj4G6Q==",
+      "tarball": "https://registry.npmjs.org/@lezer/java/-/java-1.1.5.tgz",
+      "license": "/lib/codemirror/@lezer/java@1.1.5/LICENSE"
+    },
+    "@lezer/javascript": {
+      "version": "1.5.6",
+      "entry": "dist/index.js",
+      "integrity": "sha512-sEvOqpl4vJQca0NugSQK02vQPbc5KrvoojnYGoqqFgFO0MtcYhwGiHKVEB+LuXYJnfyXo4QPA8ztbrEa4Fw5NA==",
+      "tarball": "https://registry.npmjs.org/@lezer/javascript/-/javascript-1.5.6.tgz",
+      "license": "/lib/codemirror/@lezer/javascript@1.5.6/LICENSE"
+    },
+    "@lezer/json": {
+      "version": "1.0.3",
+      "entry": "dist/index.js",
+      "integrity": "sha512-BP9KzdF9Y35PDpv04r0VeSTKDeox5vVr3efE7eBbx3r4s3oNLfunchejZhjArmeieBH+nVOpgIiBJpEAv8ilqQ==",
+      "tarball": "https://registry.npmjs.org/@lezer/json/-/json-1.0.3.tgz",
+      "license": "/lib/codemirror/@lezer/json@1.0.3/LICENSE"
+    },
+    "@lezer/lr": {
+      "version": "1.4.11",
+      "entry": "dist/index.js",
+      "integrity": "sha512-UwgZcl1R66H2hDzBrA7kWyYmX6s8p5TQ+e/t7CuvgCtBEPxbEPaHYHu+pJBvTvDotEJpuQkJjbXuHiw5Cixxgw==",
+      "tarball": "https://registry.npmjs.org/@lezer/lr/-/lr-1.4.11.tgz",
+      "license": "/lib/codemirror/@lezer/lr@1.4.11/LICENSE"
+    },
+    "@lezer/markdown": {
+      "version": "1.8.0",
+      "entry": "dist/index.js",
+      "integrity": "sha512-X6w3A2NpyhdtGqTWRJB8gR4QDXBaFMbTOs780ZdZ15KKCfBXOQTKcB3Vr+W6tqJHVlealt53tLmHRvOqPTQgYA==",
+      "tarball": "https://registry.npmjs.org/@lezer/markdown/-/markdown-1.8.0.tgz",
+      "license": "/lib/codemirror/@lezer/markdown@1.8.0/LICENSE"
+    },
+    "@lezer/php": {
+      "version": "1.0.6",
+      "entry": "dist/index.js",
+      "integrity": "sha512-QJ2xNXPmsm/Z3IpThq8fnJrEIVpxhsIoj6GZBW0JYEd/l9zxpJZW216X4fzqQY4vgpdGIumypvI4uQjd4tnYtw==",
+      "tarball": "https://registry.npmjs.org/@lezer/php/-/php-1.0.6.tgz",
+      "license": "/lib/codemirror/@lezer/php@1.0.6/LICENSE"
+    },
+    "@lezer/python": {
+      "version": "1.1.19",
+      "entry": "dist/index.js",
+      "integrity": "sha512-MhQIURHRytsNzP/YXnqpYKW6la6voAH3kyplTOOiCdjyFY6cWWGFVmYVdHIPrElqSDf4iCDktQCockB9FxuhzQ==",
+      "tarball": "https://registry.npmjs.org/@lezer/python/-/python-1.1.19.tgz",
+      "license": "/lib/codemirror/@lezer/python@1.1.19/LICENSE"
+    },
+    "@lezer/rust": {
+      "version": "1.0.3",
+      "entry": "dist/index.js",
+      "integrity": "sha512-XxErOjZzQ7yJt1agUT4fu9qQvESZ3acgoxpPaPTPOiUx+duCjaVAtZGFIgphkHxlN05djdVAIOy/wItShMEjqQ==",
+      "tarball": "https://registry.npmjs.org/@lezer/rust/-/rust-1.0.3.tgz",
+      "license": "/lib/codemirror/@lezer/rust@1.0.3/LICENSE"
+    },
+    "@lezer/xml": {
+      "version": "1.0.6",
+      "entry": "dist/index.js",
+      "integrity": "sha512-CdDwirL0OEaStFue/66ZmFSeppuL6Dwjlk8qk153mSQwiSH/Dlri4GNymrNWnUmPl2Um7QfV1FO9KFUyX3Twww==",
+      "tarball": "https://registry.npmjs.org/@lezer/xml/-/xml-1.0.6.tgz",
+      "license": "/lib/codemirror/@lezer/xml@1.0.6/LICENSE"
+    },
+    "@lezer/yaml": {
+      "version": "1.0.4",
+      "entry": "dist/index.js",
+      "integrity": "sha512-2lrrHqxalACEbxIbsjhqGpSW8kWpUKuY6RHgnSAFZa6qK62wvnPxA8hGOwOoDbwHcOFs5M4o27mjGu+P7TvBmw==",
+      "tarball": "https://registry.npmjs.org/@lezer/yaml/-/yaml-1.0.4.tgz",
+      "license": "/lib/codemirror/@lezer/yaml@1.0.4/LICENSE"
+    },
+    "@marijn/find-cluster-break": {
+      "version": "1.0.4",
+      "entry": "src/index.js",
+      "integrity": "sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==",
+      "tarball": "https://registry.npmjs.org/@marijn/find-cluster-break/-/find-cluster-break-1.0.4.tgz",
+      "license": "/lib/codemirror/@marijn/find-cluster-break@1.0.4/LICENSE"
+    },
+    "crelt": {
+      "version": "1.0.7",
+      "entry": "index.js",
+      "integrity": "sha512-aK6BbWfhf4U/wCcLHKPJl/xa6VkVstRaPywWtMKGwuOLc/wZTyQYuoxgvZnNsBvv7Kg3YTBQYYBCggcviQczuA==",
+      "tarball": "https://registry.npmjs.org/crelt/-/crelt-1.0.7.tgz",
+      "license": "/lib/codemirror/crelt@1.0.7/LICENSE"
+    },
+    "style-mod": {
+      "version": "4.1.4",
+      "entry": "src/style-mod.js",
+      "integrity": "sha512-XXWIQt633/EpAFx8aZDOTjBzrCaGmhvEQlQo6MVPfa2OzO2cWo+4hV9h+6UkHYlXGfy+ODXKUdP7Pthmcu5ATw==",
+      "tarball": "https://registry.npmjs.org/style-mod/-/style-mod-4.1.4.tgz",
+      "license": "/lib/codemirror/style-mod@4.1.4/LICENSE"
+    },
+    "w3c-keyname": {
+      "version": "2.2.8",
+      "entry": "index.js",
+      "integrity": "sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==",
+      "tarball": "https://registry.npmjs.org/w3c-keyname/-/w3c-keyname-2.2.8.tgz",
+      "license": "/lib/codemirror/w3c-keyname@2.2.8/LICENSE"
+    }
+  },
+  "files": [
+    "/lib/codemirror/@codemirror/autocomplete@6.20.3/dist/index.js",
+    "/lib/codemirror/@codemirror/commands@6.11.1/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-cpp@6.0.3/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-css@6.3.1/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-go@6.0.1/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-html@6.4.12/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-java@6.0.2/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-javascript@6.2.5/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-json@6.0.2/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-markdown@6.5.2/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-php@6.0.2/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-python@6.2.1/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-rust@6.0.2/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-sql@6.10.0/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-xml@6.1.0/dist/index.js",
+    "/lib/codemirror/@codemirror/lang-yaml@6.1.3/dist/index.js",
+    "/lib/codemirror/@codemirror/language@6.13.1/dist/index.js",
+    "/lib/codemirror/@codemirror/lint@6.9.7/dist/index.js",
+    "/lib/codemirror/@codemirror/state@6.7.6/dist/index.js",
+    "/lib/codemirror/@codemirror/streamparser@6.0.0/dist/index.js",
+    "/lib/codemirror/@codemirror/view@6.43.14/dist/index.js",
+    "/lib/codemirror/@lezer/common@1.5.3/dist/index.js",
+    "/lib/codemirror/@lezer/cpp@1.1.6/dist/index.js",
+    "/lib/codemirror/@lezer/css@1.3.9/dist/index.js",
+    "/lib/codemirror/@lezer/go@1.0.1/dist/index.js",
+    "/lib/codemirror/@lezer/highlight@1.2.5/dist/index.js",
+    "/lib/codemirror/@lezer/html@1.3.13/dist/index.js",
+    "/lib/codemirror/@lezer/java@1.1.5/dist/index.js",
+    "/lib/codemirror/@lezer/javascript@1.5.6/dist/index.js",
+    "/lib/codemirror/@lezer/json@1.0.3/dist/index.js",
+    "/lib/codemirror/@lezer/lr@1.4.11/dist/index.js",
+    "/lib/codemirror/@lezer/markdown@1.8.0/dist/index.js",
+    "/lib/codemirror/@lezer/php@1.0.6/dist/index.js",
+    "/lib/codemirror/@lezer/python@1.1.19/dist/index.js",
+    "/lib/codemirror/@lezer/rust@1.0.3/dist/index.js",
+    "/lib/codemirror/@lezer/xml@1.0.6/dist/index.js",
+    "/lib/codemirror/@lezer/yaml@1.0.4/dist/index.js",
+    "/lib/codemirror/@marijn/find-cluster-break@1.0.4/src/index.js",
+    "/lib/codemirror/crelt@1.0.7/index.js",
+    "/lib/codemirror/style-mod@4.1.4/src/style-mod.js",
+    "/lib/codemirror/w3c-keyname@2.2.8/index.js"
+  ]
+}

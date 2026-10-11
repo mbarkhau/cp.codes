@@ -7,6 +7,9 @@ import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { CRITERIA, MODEL } from '../src/jev.mjs';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const editorManifest = JSON.parse(await readFile(new URL('../public/lib/codemirror/manifest.json', import.meta.url), 'utf8'));
+const vendorAssets = new Set(['lib/uqr-0.1.2.js', 'lib/markdown-it-14.1.0.js', 'lib/hash-wasm-4.12.0.js',
+	...editorManifest.files.map(path => path.slice(1))]);
 const compiled = await build({ entryPoints: ['src/index.ts'], bundle: true, write: false, format: 'esm', platform: 'browser', external: ['cloudflare:workers'] });
 const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: compiled.outputFiles[0].text,
 	compatibilityDate: '2026-09-05', bindings: { POW_DIFFICULTY_BITS: '0', DEFAPI_KEY: 'fake-test-key', STAFF_ALLOW_DEVELOPMENT_LOGIN: 'true' }, r2Buckets: ['PASTES'],
@@ -15,7 +18,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: comp
 	})),
 	serviceBindings: { ASSETS: async request => {
 		const path = new URL(request.url).pathname.slice(1);
-		if (!/^[a-z_]+\.(js|css)$/.test(path) && !['lib/uqr-0.1.2.js', 'lib/markdown-it-14.1.0.js', 'lib/hash-wasm-4.12.0.js'].includes(path)) return new Response('', { status: 404 });
+		if (!/^[a-z_]+\.(js|css)$/.test(path) && !vendorAssets.has(path)) return new Response('', { status: 404 });
 		try { return new Response(await readFile(join(process.cwd(), 'public', path)), { headers: { 'content-type': path.endsWith('.js') ? 'application/javascript' : 'text/css' } }); }
 		catch { return new Response('', { status: 404 }); }
 	} },
@@ -62,23 +65,15 @@ async function checkThemeInitialization(browser, origin, errors) {
 		}, scenario);
 		const page = await context.newPage();
 		page.on('pageerror', error => errors.push(error.message));
-		let releaseTheme;
-		const ready = new Promise(resolve => { releaseTheme = resolve; });
-		await page.route('**/theme.js?*', async route => {
-			await ready;
-			await route.continue();
-		});
+		const requests = [];
+		page.on('request', request => requests.push(new URL(request.url()).pathname));
 		try {
-			await page.goto(origin + scenario.path, { waitUntil: 'commit' });
-			await page.locator('.site-nav').waitFor({ state: 'attached' });
-			assert.equal(await page.locator('#theme-toggle').count(), 0, 'The theme module creates the toggle');
-			const paints = await page.evaluate(async () => {
-				await new Promise(resolve => setTimeout(resolve, 150));
-				return performance.getEntriesByType('paint').length;
-			});
-			assert.equal(paints, 0, 'The page must wait for its saved theme before painting');
-			releaseTheme();
-			await page.waitForLoadState('domcontentloaded');
+			await page.goto(origin + scenario.path);
+			await page.waitForFunction(() => performance.getEntriesByName('first-contentful-paint').length > 0);
+			assert.equal(requests.includes('/site.js'), true);
+			assert.equal(requests.includes('/style.css'), true);
+			assert.equal(await page.getByRole('navigation', { name: 'Primary navigation' }).count(), 1);
+			assert.equal(await page.locator('.footer li').count(), 4);
 			assert.equal(await page.locator('#theme-toggle').count(), 1);
 			assert.equal(await page.locator('#theme-toggle svg').count(), 2);
 			assert.equal(await page.locator('html').getAttribute('data-theme'), scenario.expected);
@@ -89,7 +84,6 @@ async function checkThemeInitialization(browser, origin, errors) {
 			await page.reload();
 			assert.equal(await page.locator('html').getAttribute('data-theme'), scenario.blocked ? 'light' : next);
 		} finally {
-			releaseTheme();
 			await context.close();
 		}
 	}
@@ -134,7 +128,7 @@ async function checkEditorTheme(context, origin, errors) {
 	page.on('pageerror', error => errors.push(error.message));
 	let releaseCodeMirror;
 	const ready = new Promise(resolve => { releaseCodeMirror = resolve; });
-	await page.route('**/@codemirror/view@*/dist/index.js', async route => {
+	await page.route('**/lib/codemirror/@codemirror/view@*/dist/index.js', async route => {
 		await ready;
 		await route.continue();
 	});
@@ -187,7 +181,7 @@ async function checkEditorFocus(context, origin, errors) {
 		page.on('pageerror', error => errors.push(error.message));
 		let releaseCodeMirror;
 		const ready = new Promise(resolve => { releaseCodeMirror = resolve; });
-		await page.route('**/@codemirror/view@*/dist/index.js', async route => {
+		await page.route('**/lib/codemirror/@codemirror/view@*/dist/index.js', async route => {
 			await ready;
 			await route.continue();
 		});
@@ -275,8 +269,7 @@ try {
 	]);
 	await page.waitForFunction(() => document.querySelectorAll('.editor-card').length === 4);
 	await page.locator('.cm-content, .editor-fallback').first().focus();
-	await page.locator('#preview-file').click();
-	await page.waitForFunction(() => document.querySelector('#draft-preview img')?.naturalWidth === 1);
+	assert.equal(await page.locator('#preview-file, #draft-preview').count(), 0);
 	await page.screenshot({ path: '/tmp/cp-codes-composer.png', fullPage: true });
 	await page.locator('#consent').check(); await page.locator('#consent-moderation').check(); await page.locator('#publish').click();
 	await page.waitForURL(url => /^\/CP[A-Z0-9]+$/.test(url.pathname));
@@ -288,12 +281,17 @@ try {
 	await page.locator('#saved-authorization').waitFor({ state: 'visible' });
 	assert.deepEqual((await page.locator('#saved-passphrase').textContent()).trim().split(/\s+/), Array(8).fill('********'));
 	await page.locator('#saved-passphrase').click();
+	await page.waitForFunction(() => !document.querySelector('#saved-passphrase').textContent.includes('********'));
 	assert.equal((await page.locator('#saved-passphrase').textContent()).trim().split(/\s+/).join(' '), credentials.passphrase);
 	assert.ok(!(await page.locator('#saved-authorization').innerText()).includes(credentials.passcode));
 	assert.match(await page.locator('h1').innerText(), /Human review/);
 	await page.locator('#paste-delete').waitFor({ state: 'visible' });
 	await page.goto(`${origin}/login`); await page.locator('#username').fill('admin'); await page.locator('#password').fill('4dm1n');
 	await page.getByRole('button', { name: 'Log in', exact: true }).click(); await page.waitForURL('**/admin/pastes');
+	await page.goto(`${origin}/about`);
+	assert.equal(await page.locator('.staff-nav-start, .nav-logout').count(), 2);
+	assert.match(await page.evaluate(() => document.cookie), /(?:^|; )cp_staff_nav=1(?:;|$)/);
+	assert.doesNotMatch(await page.evaluate(() => document.cookie), /(?:^|; )cp_session=/);
 	await page.goto(`${origin}/admin/paste/${id}/view`);
 	await page.waitForFunction(() => document.querySelector('#paste-content img')?.naturalWidth === 1);
 	await page.getByRole('tab', { name: codeFilename, exact: true }).click();
@@ -304,7 +302,9 @@ try {
 	const anon = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
 	const viewer = await anon.newPage(); viewer.on('pageerror', error => errors.push(error.message));
 	const viewResponse = await viewer.goto(`${origin}/${id}`);
-	assert.doesNotMatch(await viewResponse.text(), /paste-toolbar|id="copy-link"|id="copy-paste"/);
+	const viewHtml = await viewResponse.text();
+	assert.match(viewHtml, /<div class="paste-toolbar"><\/div>/);
+	assert.doesNotMatch(viewHtml, /id="copy-link"|id="copy-paste"/);
 	assert.equal(await viewer.locator('.paste-head > .paste-toolbar').count(), 1);
 	await viewer.waitForFunction(() => document.querySelector('#paste-content img')?.naturalWidth === 1);
 	assert.equal(await viewer.locator('.sharing-banner, #selected-file-info').count(), 0);
@@ -342,6 +342,7 @@ try {
 	await viewer.locator('#saved-passphrase').focus();
 	assert.equal(await viewer.locator('#saved-passphrase').textContent(), phraseLayout.text);
 	await viewer.locator('#saved-passphrase').click();
+	await viewer.waitForFunction(() => !document.querySelector('#saved-passphrase').textContent.includes('********'));
 	assert.equal((await viewer.locator('#saved-passphrase').textContent()).trim().split(/\s+/).join(' '), credentials.passphrase);
 	assert.ok(!(await viewer.locator('body').innerText()).includes(credentials.passcode));
 	const copyIcon = await actionIcon(viewer.locator('#copy-paste'));
@@ -457,10 +458,16 @@ try {
 	await linked.goto(selectedLink);
 	await linked.waitForFunction(() => document.querySelector('#paste-content').textContent.includes('console.log'));
 	assert.equal(await linked.getByRole('tab', { name: codeFilename }).getAttribute('aria-selected'), 'true');
+	assert.equal(await linked.locator('#qr').count(), 0);
+	await linked.locator('#open-details').click();
+	await linked.waitForFunction(() => document.querySelector('#qr')?.naturalWidth > 0);
+	await linked.keyboard.press('Escape');
 	await linked.reload();
 	await linked.waitForFunction(() => document.querySelector('#paste-content').textContent.includes('console.log'));
+	await linked.locator('#open-details').click();
 	await linked.waitForFunction(() => document.querySelector('#qr')?.naturalWidth > 0);
 	assert.equal(await linked.locator('#qr').getAttribute('data-qr-cache-hit'), 'true');
+	await linked.keyboard.press('Escape');
 	await linked.evaluate(() => {
 		const id = document.querySelector('#paste-content').dataset.cpCode;
 		const entries = JSON.parse(localStorage.getItem('cp.codes.paste.v1'));
@@ -469,8 +476,10 @@ try {
 	});
 	await linked.reload();
 	await linked.waitForFunction(() => document.querySelector('#paste-content').textContent.includes('console.log'));
+	await linked.locator('#open-details').click();
 	await linked.waitForFunction(() => document.querySelector('#qr')?.naturalWidth > 0);
 	assert.equal(await linked.locator('#qr').getAttribute('data-qr-cache-hit'), null);
+	await linked.keyboard.press('Escape');
 	await linked.evaluate(() => { location.hash = '#file-readme.md'; });
 	await linked.waitForFunction(() => document.querySelector('#paste-content h1')?.textContent === 'My document');
 	await linked.locator('#paste-content a').filter({ hasText: 'Code' }).click();
@@ -580,6 +589,12 @@ try {
 	await viewer.waitForURL(origin + '/');
 	assert.equal(await viewer.evaluate(id => localStorage.getItem(`cp.codes.authorization.v1:${id}`), textPasteId), null);
 	assert.equal((await mf.dispatchFetch(`${origin}/api/paste/${textPasteId}`)).status, 404);
+	await page.goto(`${origin}/about`);
+	await page.getByRole('button', { name: 'log out', exact: true }).click();
+	await page.waitForURL('**/login');
+	await page.goto(`${origin}/about`);
+	assert.equal(await page.locator('.staff-nav-start, .nav-logout').count(), 0);
+	assert.doesNotMatch(await page.evaluate(() => document.cookie), /(?:^|; )cp_staff_nav=1(?:;|$)/);
 	assert.deepEqual(errors, []);
-	console.log('Browser smoke passed: passphrase authorization, masked phrase grid below content with click to reveal, authorized deletion, image/text clipboard, responsive file tabs/deep links, theme hierarchy/contrast, editor placeholder/layout, focus/selection, files, preview, media review, staff inspection/approval, sibling images, limited text sharing, mobile layout and dark mode.');
+	console.log('Browser smoke passed: passphrase authorization, masked phrase grid below content with click to reveal, authorized deletion, image/text clipboard, responsive file tabs/deep links, theme hierarchy/contrast, editor placeholder/layout, focus/selection, files, media review, staff inspection/approval, sibling images, limited text sharing, mobile layout and dark mode.');
 } finally { await browser?.close(); await mf.dispose(); }

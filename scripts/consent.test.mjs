@@ -53,8 +53,6 @@ test("upload page displays separate unchecked consent controls", async () => {
 	assert.match(html, /id="publish" disabled/);
 	assert.match(html, /id="listed" checked \/>/);
 	assert.match(html, /id="file-editors"[^>]*>\s*<article class="editor-card editor-placeholder" aria-hidden="true">/);
-	assert.match(html, /<link rel="stylesheet" href="\/style\.css\?v=\d+" \/>/);
-	assert.doesNotMatch(html, /<style[\s>]/);
 	const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
 	assert.match(css, /#file-editors, \.editor-placeholder \{ min-height: 320px; \}/);
 	assert.match(html, />Add file</);
@@ -132,6 +130,7 @@ test("browser requires both consents, locks both while busy, and submits both", 
 			return authorizationStored;
 		},
 		contentTypeForFilename: () => "plaintext",
+		loadAuthorization: async () => ({ storeAuthorization: context.storeAuthorization }),
 		sha256Hex: async () => "hash", gzip: async () => new Uint8Array([1]),
 		bytesToBase64: () => "gzip", solvePow: async () => ({ solution: "0", pow_hash: "proof" }),
 		fetch: async (path, options) => {

@@ -1,5 +1,9 @@
 # Vendored browser libraries
 
+CodeMirror and its language/parser dependencies are vendored as unmodified ESM
+files in `codemirror/`. See `codemirror/README.md` for the version pins, integrity
+manifest, maintenance command, and offline browser verification.
+
 ## uqr 0.1.2
 
 `uqr-0.1.2.js` is the unmodified `dist/index.mjs` from the published

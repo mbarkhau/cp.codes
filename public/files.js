@@ -102,16 +102,6 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		}));
 	}
 
-	let previewVersion = 0;
-	let previewed = null;
-	const previewPane = () => document.getElementById('draft-preview');
-	function hidePreview() {
-		previewVersion++;
-		previewed = null;
-		const pane = previewPane();
-		if (pane) { pane.hidden = true; pane.replaceChildren(); }
-		document.getElementById('preview-file')?.setAttribute('aria-pressed', 'false');
-	}
 
 	function updateRemoveButtons() {
 		for (const file of files) file.removeButton.hidden = files.length < 2;
@@ -143,7 +133,7 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		textarea.value = file.content;
 		textarea.spellcheck = false;
 		textarea.setAttribute('aria-label', 'File content');
-		textarea.addEventListener('input', () => { file.content = textarea.value; hidePreview(file); syncTypeLabel(file); notify(); });
+		textarea.addEventListener('input', () => { file.content = textarea.value; syncTypeLabel(file); notify(); });
 		textarea.addEventListener('keydown', (event) => {
 			if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); submit(); }
 		});
@@ -214,7 +204,6 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 						cm.EditorView.updateListener.of((update) => {
 							if (!update.docChanged) return;
 							file.content = update.state.doc.toString();
-							hidePreview(file);
 							syncTypeLabel(file);
 							notify();
 						}),
@@ -322,8 +311,8 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		mount.className = 'editor-mount';
 		file.mount = mount;
 		card.append(toolbar, mount);
-		input.addEventListener('input', () => { hidePreview(file); syncTypeLabel(file); void applyLanguage(file); notify(); });
-		typeSelect.addEventListener('change', () => { hidePreview(file); syncTypeLabel(file); void applyLanguage(file); notify(); });
+		input.addEventListener('input', () => { syncTypeLabel(file); void applyLanguage(file); notify(); });
+		typeSelect.addEventListener('change', () => { syncTypeLabel(file); void applyLanguage(file); notify(); });
 		remove.addEventListener('click', () => {
 			if (files.length < 2) return;
 			file.editor?.destroy();
@@ -332,53 +321,11 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 			updateRemoveButtons();
 			notify();
 		});
-		const markActive = () => { active = file; };
-		card.addEventListener('pointerdown', markActive);
-		card.addEventListener('focusin', markActive);
 		const initialType = initial.content_type ?? detectContentType(file.content);
 		if (mediaTypes.has(initialType)) showMedia(file);
 		else file.editor = mountTextEditor(file);
 		syncTypeLabel(file);
 		return file;
-	}
-
-	async function togglePreview(file) {
-		const pane = previewPane();
-		if (!pane) return;
-		if (previewed === file && !pane.hidden) { hidePreview(); return; }
-		const version = ++previewVersion;
-		previewed = file;
-		pane.hidden = false;
-		document.getElementById('preview-file')?.setAttribute('aria-pressed', 'true');
-		pane.textContent = 'Preparing preview…';
-		try {
-			const index = files.indexOf(file);
-			const contentType = resolveType(file, index);
-			let element;
-			if (contentType === 'markdown') {
-				const { markdownElement } = await import('./markdown.js?v=2');
-				const attachments = new Map(items().map((item) => [item.name, {
-					url: item.content, image: ['png', 'jpeg', 'webp', 'gif'].includes(item.content_type), link: `#file-${encodeURIComponent(item.name)}`,
-				}]));
-				element = await markdownElement(file.content, attachments);
-				for (const link of element.querySelectorAll('a[href^="#file-"]')) link.addEventListener('click', (event) => {
-					event.preventDefault();
-					const name = decodeURIComponent(link.getAttribute('href').slice(6));
-					const target = files.find((item) => item.input.value === name);
-					target?.editor?.focus();
-				});
-			} else if (['png', 'jpeg', 'webp', 'gif'].includes(contentType)) {
-				element = document.createElement('img');
-				element.src = file.content; element.alt = file.input.value; element.className = 'paste-image';
-			} else {
-				element = document.createElement('pre');
-				element.className = 'paste';
-				element.textContent = file.content;
-			}
-			if (version === previewVersion) pane.replaceChildren(element);
-		} catch {
-			if (version === previewVersion) pane.textContent = 'Preview unavailable. Your source is still intact.';
-		}
 	}
 
 	function add(name, text, contentType) {
@@ -431,21 +378,12 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		return { bundle, content: draft[0].content, filename: draft[0].name, content_type: draft[0].content_type };
 	}
 
-	let active;
 	const first = createFile();
 	files.push(first);
-	active = first;
 	root.replaceChildren(first.card);
 	updateRemoveButtons();
 	document.getElementById('add-text')?.addEventListener('click', () => {
 		try { add('', '', 'plaintext'); } catch (error) { notify(error.message); }
-	});
-	const previewButton = document.getElementById('preview-file');
-	previewButton?.addEventListener('mousedown', (event) => event.preventDefault());
-	previewButton?.addEventListener('click', () => {
-		const card = document.activeElement?.closest?.('.editor-card');
-		const focused = files.find((item) => item.card === card) ?? (files.includes(active) ? active : files[0]);
-		void togglePreview(focused);
 	});
 	return {
 		add, prepare, serialized,

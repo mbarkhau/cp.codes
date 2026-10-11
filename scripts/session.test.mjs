@@ -27,7 +27,8 @@ const login = (form = {}, headers = {}, instance = mf) => fetch("/login", {
 	method: "POST", headers: { origin: "https://cp.codes", "cf-connecting-ip": `192.0.2.${++ipCounter}`, ...headers },
 	body: new URLSearchParams({ username: "admin", password: "4dm1n", ...form }),
 }, instance);
-const cookieOf = response => response.headers.get("set-cookie").split(";")[0];
+const sessionCookieHeader = response => response.headers.getSetCookie().find(value => /^(?:__Host-)?cp_session=/.test(value));
+const cookieOf = response => sessionCookieHeader(response).split(";")[0];
 const getUser = async (cookie, instance = mf) => {
 	const response = await fetch("/api/admin/users", { headers: { cookie } }, instance);
 	assert.equal(response.status, 200);
@@ -94,9 +95,10 @@ test("login creates a random, host-only, eight-hour session with safe cookie fla
 	const response = await login({ next: "/admin/pow" });
 	assert.equal(response.status, 303);
 	assert.equal(response.headers.get("location"), "/admin/pow");
-	const header = response.headers.get("set-cookie");
+	const header = sessionCookieHeader(response);
 	assert.match(header, /^__Host-cp_session=[0-9a-f]{64}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=28800; Secure$/);
 	assert.doesNotMatch(header, /Domain=/);
+	assert.ok(response.headers.getSetCookie().includes('__Host-cp_staff_nav=1; Path=/; SameSite=Lax; Max-Age=28800; Secure'));
 	const cookie = cookieOf(response);
 	assert.deepEqual(await getUser(cookie), { username: "admin", role: "admin" });
 	const stored = await fixture("inspect", cookie);
@@ -108,22 +110,32 @@ test("login creates a random, host-only, eight-hour session with safe cookie fla
 	assert.equal((await fetch("/login", { headers: { cookie } })).status, 303);
 });
 
-test("public pages show staff navigation only after successful authentication", async () => {
+test("public page HTML does not depend on staff authentication", async () => {
 	const cookie = cookieOf(await login());
-	for (const path of ["/about", "/pastes", "/new", "/", "/client-info"]) {
-		const response = await fetch(path, { headers: { cookie } });
-		assert.equal(response.status, 200);
-		assert.equal(response.headers.get("cache-control"), "no-store, private");
-		assert.equal(response.headers.get("vary"), "Cookie, Authorization");
-		const html = await response.text();
-		assert.match(html, /href="\/admin\/pastes"/);
-		assert.match(html, /method="post" action="\/logout"/);
-		assert.ok(!html.includes(cookie.split("=")[1]));
-		for (const headers of [{}, auth("admin", "wrong"), { cookie: "__Host-cp_session=" + "0".repeat(64) }]) {
-			const anonymous = await (await fetch(path, { headers })).text();
-			assert.doesNotMatch(anonymous, /href="\/admin\/pastes"|href="\/login"/);
+	// Omit the session binding: even a valid-looking session cookie must not cause a lookup.
+	const instance = new Miniflare(settings({ durableObjects: {
+		PASTE_INDEX: { className: 'PasteIndex', useSQLite: true },
+	} }));
+	try {
+		for (const path of ["/about", "/pastes", "/new", "/", "/client-info", "/missing"]) {
+			const requestHeaders = { cookie, accept: 'text/html' };
+			const withoutSessionBinding = await fetch(path, { headers: requestHeaders }, instance);
+			assert.equal(withoutSessionBinding.status, path === '/missing' ? 404 : 200);
+			if (path === '/missing') continue;
+			const response = await fetch(path, { headers: { cookie } });
+			assert.equal(response.status, 200);
+			assert.equal(response.headers.get("cache-control"), "no-store, private");
+			assert.equal(response.headers.get("vary"), "Cookie, Authorization");
+			const html = await response.text();
+			assert.match(html, /<header><\/header>/);
+			assert.doesNotMatch(html, /data-staff-navigation/);
+			assert.ok(!html.includes(cookie.split("=")[1]));
+			for (const headers of [{}, auth("admin", "wrong"), { cookie: "__Host-cp_session=" + "0".repeat(64) }]) {
+				const anonymous = await (await fetch(path, { headers })).text();
+				assert.equal(anonymous, html);
+			}
 		}
-	}
+	} finally { await instance.dispose(); }
 });
 
 test("cookie authentication preserves role restrictions and CSRF checks on staff mutations", async () => {
@@ -160,7 +172,8 @@ test("logout is POST-only, rejects CSRF, clears the cookie, and revokes the bear
 	const response = await fetch("/logout", { method: "POST", headers: { cookie, origin: "https://cp.codes" } });
 	assert.equal(response.status, 303);
 	assert.equal(response.headers.get("location"), "/login");
-	assert.match(response.headers.get("set-cookie"), /^__Host-cp_session=;.*Max-Age=0; Secure$/);
+	assert.match(sessionCookieHeader(response), /^__Host-cp_session=;.*Max-Age=0; Secure$/);
+	assert.ok(response.headers.getSetCookie().includes('__Host-cp_staff_nav=; Path=/; SameSite=Lax; Max-Age=0; Secure'));
 	assert.equal((await fetch("/api/admin/users", { headers: { cookie } })).status, 401);
 	assert.equal((await fetch("/admin/users", { headers: { cookie } })).status, 303);
 	assert.deepEqual(await fixture("inspect", cookie), []);
@@ -182,6 +195,7 @@ test("expired sessions fail immediately, before delayed alarm cleanup", async ()
 	await fixture("expire", cookie);
 	const expired = await fetch("/api/admin/users", { headers: { cookie } });
 	assert.equal(expired.status, 401);
+	assert.ok(expired.headers.getSetCookie().includes('__Host-cp_staff_nav=; Path=/; SameSite=Lax; Max-Age=0; Secure'));
 	assert.equal(expired.headers.get("www-authenticate"), null);
 	const browser = await fetch("/api/admin/users", { headers: { "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin" } });
 	assert.equal(browser.status, 401);
@@ -222,7 +236,7 @@ test("login redirect destinations cannot point to another origin or reflect unsa
 
 test("invalid, duplicate, and wrong-scope cookies never authenticate", async () => {
 	const valid = cookieOf(await login());
-	for (const cookie of ["__Host-cp_session=bad", valid + "; " + valid, valid.replace("__Host-cp_session", "cp_session"), "__Host-cp_session=" + "f".repeat(64)]) {
+	for (const cookie of ["__Host-cp_staff_nav=1", "__Host-cp_session=bad", valid + "; " + valid, valid.replace("__Host-cp_session", "cp_session"), "__Host-cp_session=" + "f".repeat(64)]) {
 		assert.equal((await fetch("/api/admin/users", { headers: { cookie } })).status, 401);
 	}
 });
@@ -252,7 +266,8 @@ test("loopback HTTP development works without weakening production cookie transp
 		body: new URLSearchParams({ username: "admin", password: "4dm1n" }),
 	});
 	assert.equal(response.status, 303);
-	assert.match(response.headers.get("set-cookie"), /^cp_session=[0-9a-f]{64}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=28800$/);
+	assert.match(sessionCookieHeader(response), /^cp_session=[0-9a-f]{64}; Path=\/; HttpOnly; SameSite=Lax; Max-Age=28800$/);
+	assert.ok(response.headers.getSetCookie().includes('cp_staff_nav=1; Path=/; SameSite=Lax; Max-Age=28800'));
 	assert.equal((await mf.dispatchFetch("http://localhost:8787/api/admin/users", {
 		headers: { cookie: cookieOf(response) },
 	})).status, 200);

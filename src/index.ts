@@ -614,18 +614,29 @@ async function handleCreatePaste(request: Request, env: Env): Promise<Response> 
 	);
 }
 
+type DeferredReadTracking = Map<string, { access: paste.PasteAccess | null; incrementHit: boolean }>;
+
+function deferReadTracking(tracking: DeferredReadTracking, id: string, access: paste.PasteAccess | null = null, incrementHit = false): void {
+	const previous = tracking.get(id);
+	tracking.set(id, { access: access ?? previous?.access ?? null, incrementHit: incrementHit || previous?.incrementHit || false });
+}
+
 async function unavailablePasteResponse(
 	request: Request,
 	env: Env,
 	moderation: paste.PasteModeration,
 	mode: "html" | "raw" | "json",
 	bodyRequest = false,
+	tracking?: DeferredReadTracking,
 ): Promise<Response | null> {
 	const staff = await admin.authenticateStaff(request, env);
 	if (moderation.visibility !== 'deleted' && staff) return null;
 	const retained = await paste.getRetainedPaste(env, moderation.paste_id);
 	const access = await paste.pasteIndexStub(env).authorizeAccess(moderation.paste_id, clientIp(request),
 		bodyRequest && request.method === 'GET' ? retained?.metadata.byte_length ?? 0 : 0, request.method === 'GET');
+	if (tracking && request.method === 'GET' && moderation.visibility === 'visible' && moderation.decision === 'unreviewed') {
+		deferReadTracking(tracking, moderation.paste_id);
+	}
 	if (access.allowed) return null;
 	const status = moderation.visibility === 'visible' && retained ? 423 : 404;
 	if (mode === 'html') return ui.reviewRequiredPage(moderation.paste_id, access.reason, status);
@@ -684,6 +695,7 @@ async function handleGetPaste(
 	env: Env,
 	id: string,
 	mode: "html" | "raw" | "json",
+	tracking: DeferredReadTracking,
 	requestedContentType?: contentType.ContentType,
 ): Promise<Response> {
 	let parts: cpCode.CPCode;
@@ -691,12 +703,12 @@ async function handleGetPaste(
 		parts = cpCode.parseCpCode(id);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : "invalid id";
-		if (mode === "html") return ui.notFoundPage(message, Boolean(await admin.authenticateStaff(request, env)));
+		if (mode === "html") return ui.notFoundPage(message);
 		return error(message, 400);
 	}
 
-	const moderation = await paste.getPasteModeration(env, id);
-	const unavailable = await unavailablePasteResponse(request, env, moderation, mode, mode === 'raw');
+	const { moderation, hit_count: hitCount } = await paste.pasteIndexStub(env).getReadState(id);
+	const unavailable = await unavailablePasteResponse(request, env, moderation, mode, mode === 'raw', tracking);
 	if (unavailable) return unavailable;
 
 	const object = mode === "raw" && request.method === "GET"
@@ -704,7 +716,7 @@ async function handleGetPaste(
 		: null;
 	const stored = object?.metadata ?? await paste.getPasteMetadata(env, id);
 	if (!stored) {
-		if (mode === "html") return ui.notFoundPage(`No paste for ${id}`, Boolean(await admin.authenticateStaff(request, env)));
+		if (mode === "html") return ui.notFoundPage(`No paste for ${id}`);
 		return error("paste not found", 404);
 	}
 
@@ -723,7 +735,7 @@ async function handleGetPaste(
 	) {
 		const redirectObject = object ?? await paste.getPasteObject(env, id);
 		if (!redirectObject) {
-			if (mode === "html") return ui.notFoundPage(`No paste for ${id}`, Boolean(await admin.authenticateStaff(request, env)));
+			if (mode === "html") return ui.notFoundPage(`No paste for ${id}`);
 			return error("paste not found", 404);
 		}
 		let target: URL;
@@ -733,9 +745,7 @@ async function handleGetPaste(
 			const message = err instanceof Error ? err.message : "approved URL is invalid";
 			return error(message, 422);
 		}
-		const hitCount = request.method === "GET"
-			? await paste.recordPasteAccess(env, id, pasteAccessFromRequest(request, "redirect"))
-			: await paste.getPasteHitCount(env, id);
+		if (request.method === 'GET') deferReadTracking(tracking, id, pasteAccessFromRequest(request, 'redirect'), true);
 		return new Response(null, {
 			status: 302,
 			headers: {
@@ -750,18 +760,10 @@ async function handleGetPaste(
 
 	// Browser and JSON metadata views are logged without affecting hit counts.
 	// Logging HTML here retains the external Referer before the content fetch.
-	let hitCount: number;
 	if (request.method === "GET" && mode === "raw") {
-		hitCount = await paste.recordPasteAccess(env, id, pasteAccessFromRequest(request, "raw"));
+		deferReadTracking(tracking, id, pasteAccessFromRequest(request, 'raw'), true);
 	} else if (request.method === "GET" && (mode === "html" || mode === "json")) {
-		hitCount = await paste.recordPasteAccess(
-			env,
-			id,
-			pasteAccessFromRequest(request, mode),
-			false,
-		);
-	} else {
-		hitCount = await paste.getPasteHitCount(env, id);
+		deferReadTracking(tracking, id, pasteAccessFromRequest(request, mode));
 	}
 
 	if (mode === 'raw' && stored.format === 'bundle-v1') {
@@ -807,18 +809,18 @@ async function handleGetPaste(
 		}, 200, { "cache-control": "no-store" });
 	}
 
-	return ui.viewPage(stored, hitCount, Boolean(await admin.authenticateStaff(request, env)), moderation.visibility === "hidden");
+	return ui.viewPage(stored, hitCount, moderation.visibility === "hidden");
 }
 
 /** Serve the exact R2 representation for client-side decompression. */
-async function handleGetPasteContent(request: Request, env: Env, id: string): Promise<Response> {
+async function handleGetPasteContent(request: Request, env: Env, id: string, tracking: DeferredReadTracking): Promise<Response> {
 	try {
 		cpCode.parseCpCode(id);
 	} catch (err) {
 		return error(err instanceof Error ? err.message : "invalid id", 400);
 	}
-	const moderation = await paste.getPasteModeration(env, id);
-	const unavailable = await unavailablePasteResponse(request, env, moderation, "raw", true);
+	const { moderation, hit_count: hitCount } = await paste.pasteIndexStub(env).getReadState(id);
+	const unavailable = await unavailablePasteResponse(request, env, moderation, "raw", true, tracking);
 	if (unavailable) return unavailable;
 	const object = request.method === "GET" ? await paste.getPasteObject(env, id) : null;
 	const stored = object?.metadata ?? await paste.getPasteMetadata(env, id);
@@ -827,13 +829,8 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 	// This endpoint is the point at which the HTML client actually loads the
 	// body. Its HTML request was already logged with the external Referer, so the
 	// follow-up only increments the hit. Direct content API access is logged here.
-	let hitCount: number;
-	if (request.method !== "GET") {
-		hitCount = await paste.getPasteHitCount(env, id);
-	} else if (contentRequestFollowsHtmlView(request, id)) {
-		hitCount = await paste.incrementPasteHitCount(env, id);
-	} else {
-		hitCount = await paste.recordPasteAccess(env, id, pasteAccessFromRequest(request, "content"));
+	if (request.method === 'GET') {
+		deferReadTracking(tracking, id, contentRequestFollowsHtmlView(request, id) ? null : pasteAccessFromRequest(request, 'content'), true);
 	}
 
 	return new Response(object?.body ?? null, {
@@ -843,7 +840,11 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 				: "text/plain; charset=utf-8",
 			'content-security-policy': "sandbox; default-src 'none'",
 			"content-length": String(stored.compressed_byte_length),
-			"cache-control": "no-store",
+			// Stored bytes are immutable; keep access-controlled bodies out of shared caches.
+			"cache-control": moderation.visibility === "visible"
+				? "private, max-age=31536000, immutable"
+				: "no-store, private",
+			"vary": "Cookie, Authorization",
 			"x-content-type-options": "nosniff",
 			"x-content-encoding": stored.content_encoding,
 			"x-uncompressed-content-length": String(stored.byte_length),
@@ -853,17 +854,18 @@ async function handleGetPasteContent(request: Request, env: Env, id: string): Pr
 	});
 }
 
-async function handleBundleFile(request: Request, env: Env, id: string, encodedName: string): Promise<Response> {
+async function handleBundleFile(request: Request, env: Env, id: string, encodedName: string, tracking: DeferredReadTracking): Promise<Response> {
 	let name: string;
 	try { cpCode.parseCpCode(id); name = decodeURIComponent(encodedName); } catch { return error('File not found', 404); }
 	const retained = await paste.getRetainedPaste(env, id);
 	if (!retained?.metadata.files?.some(file => file.name === name)) return error('File not found', 404);
-	const unavailable = await unavailablePasteResponse(request, env, retained.moderation, 'raw', true);
+	const hits = await paste.getPasteHitCount(env, id);
+	const unavailable = await unavailablePasteResponse(request, env, retained.moderation, 'raw', true, tracking);
 	if (unavailable) return unavailable;
 	const object = request.method === 'GET' ? await paste.getPasteObject(env, id) : null;
 	const stored = object?.metadata ?? (request.method === 'HEAD' ? await paste.getPasteMetadata(env, id) : null);
 	if (!stored) return error('Paste not found', 404);
-	const hits = request.method === 'GET' ? await paste.recordPasteAccess(env, id, pasteAccessFromRequest(request, 'raw')) : await paste.getPasteHitCount(env, id);
+	if (request.method === 'GET') deferReadTracking(tracking, id, pasteAccessFromRequest(request, 'raw'), true);
 	return bundleFileResponse(request, object, stored, name, hits);
 }
 
@@ -965,7 +967,7 @@ async function handleListPastes(url: URL, env: Env): Promise<Response> {
 	});
 }
 
-async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function routeRequest(request: Request, env: Env, ctx: ExecutionContext, tracking: DeferredReadTracking): Promise<Response> {
 		const url = new URL(request.url);
 		const path = url.pathname.replace(/\/+$/, "") || "/";
 		const method = request.method;
@@ -1037,7 +1039,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 		const fileRoute = path.match(/^\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/files\/([^/]+)$/);
 		if (fileRoute) {
 			if (method !== 'GET' && method !== 'HEAD') return error('Method Not Allowed', 405);
-			return handleBundleFile(request, env, fileRoute[1]!.toUpperCase(), fileRoute[2]!);
+			return handleBundleFile(request, env, fileRoute[1]!.toUpperCase(), fileRoute[2]!, tracking);
 		}
 
 		const apiPasteAuthorize = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/authorize$/);
@@ -1055,7 +1057,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 		const apiPasteContent = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))\/content$/);
 		if (apiPasteContent) {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return handleGetPasteContent(request, env, apiPasteContent[1]!.toUpperCase());
+			return handleGetPasteContent(request, env, apiPasteContent[1]!.toUpperCase(), tracking);
 		}
 
 		const apiPaste = path.match(/^\/api\/paste\/(CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10}))$/);
@@ -1063,17 +1065,17 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 			const id = apiPaste[1]!.toUpperCase();
 			if (method === "DELETE") return handleDeletePaste(request, env, id);
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return handleGetPaste(request, env, id, "json");
+			return handleGetPaste(request, env, id, "json", tracking);
 		}
 
 		if (path === "/" || path === "/index.html") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.newPage(Boolean(await admin.authenticateStaff(request, env)));
+			return ui.newPage();
 		}
 
 		if (path === "/about") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.aboutPage(Boolean(await admin.authenticateStaff(request, env)));
+			return ui.aboutPage();
 		}
 
 		if (path === "/pastes") {
@@ -1082,17 +1084,17 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 			const page = Number(rawPage);
 			if (!/^[1-9]\d*$/.test(rawPage) || !Number.isSafeInteger(page)) return error('page must be a positive safe integer');
 			const listing = await paste.listPublicPastesPage(env, page);
-			return ui.pastesPage(listing, Boolean(await admin.authenticateStaff(request, env)));
+			return ui.pastesPage(listing);
 		}
 
 		if (path === "/client-info") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.clientInfoPage(uploadMetadataFromRequest(request), Boolean(await admin.authenticateStaff(request, env)));
+			return ui.clientInfoPage(uploadMetadataFromRequest(request));
 		}
 
 		if (path === "/new") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
-			return ui.newPage(Boolean(await admin.authenticateStaff(request, env)));
+			return ui.newPage();
 		}
 
 		// Static client bundle
@@ -1114,6 +1116,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 				env,
 				rawMatch[1]!.toUpperCase(),
 				"raw",
+				tracking,
 				requestedContentType,
 			);
 		}
@@ -1124,7 +1127,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 			const id = idMatch[1]!.toUpperCase();
 			if (!CP_ID_RE.test(id)) return error("invalid id", 400);
 			const mode = wantsHtml(request) ? "html" : "raw";
-			return handleGetPaste(request, env, id, mode);
+			return handleGetPaste(request, env, id, mode, tracking);
 		}
 
 		// Fall through to static assets (if any)
@@ -1133,17 +1136,27 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 			if (assetResp.status !== 404) return withAssetCachePolicy(request, assetResp);
 		}
 
-		if (wantsHtml(request)) return ui.notFoundPage("Not found", Boolean(await admin.authenticateStaff(request, env)));
+		if (wantsHtml(request)) return ui.notFoundPage("Not found");
 		return error("Not Found", 404);
 }
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
-		try { return await routeRequest(request, env, ctx); }
+		const tracking: DeferredReadTracking = new Map();
+		let response: Response;
+		try { response = await routeRequest(request, env, ctx, tracking); }
 		catch {
 			// Never log request bodies, credentials, or arbitrary provider errors.
 			console.error(JSON.stringify({ service: 'cp.codes', event: 'request_failed', method: request.method }));
-			return error('The service could not complete this request. Please try again.', 503);
+			response = error('The service could not complete this request. Please try again.', 503);
 		}
+		// Start persistence only after every response-path read has completed, so
+		// Durable Object output gates cannot hold those reads behind tracking writes.
+		if (tracking.size) ctx.waitUntil(Promise.all([...tracking].map(([id, entry]) =>
+			paste.pasteIndexStub(env).completeRead(id, entry.access, entry.incrementHit),
+		)).catch(() => {
+			console.error(JSON.stringify({ service: 'cp.codes', event: 'read_tracking_failed' }));
+		}));
+		return response;
 	},
 } satisfies ExportedHandler<Env>;

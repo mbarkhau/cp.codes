@@ -8,7 +8,7 @@ import { layout, viewPage } from "./ui";
 import { assetUrl } from './assets';
 import {
 	allowLoginAttempt, createSession, revokeSession, sessionCookie,
-	sessionToken, sessionTransportAllowed, sessionUsername,
+	sessionToken, sessionTransportAllowed, sessionUsername, staffNavigationCookie,
 } from "./session";
 
 export type StaffRole = "admin" | "mod";
@@ -53,6 +53,7 @@ function staffHeaders(contentType: string): Headers {
 
 function unauthorized(api: boolean, request: Request): Response {
 	const headers = staffHeaders(api ? "application/json; charset=utf-8" : "text/plain; charset=utf-8");
+	headers.append('set-cookie', staffNavigationCookie(request, false));
 	// Do not prompt browser fetches for a password when their session expires.
 	if (api && !sessionToken(request) && !request.headers.has("sec-fetch-site")) {
 		headers.set("www-authenticate", `Basic realm="cp.codes staff", charset="UTF-8"`);
@@ -120,10 +121,11 @@ function safeReturnTo(value: unknown, request: Request): string {
 	return target.pathname + target.search;
 }
 
-function authRedirect(location: string, cookie?: string): Response {
+function authRedirect(location: string, cookie?: string, navigationCookie?: string): Response {
 	const headers = staffHeaders("text/plain; charset=utf-8");
 	headers.set("location", location);
 	if (cookie !== undefined) headers.set("set-cookie", cookie);
+	if (navigationCookie !== undefined) headers.append('set-cookie', navigationCookie);
 	return new Response(null, { status: 303, headers });
 }
 
@@ -137,7 +139,7 @@ ${message ? `<p class="status err" role="alert">${escapeHtml(message)}</p>` : ""
 <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required />
 <p><button type="submit">Log in</button></p>
 </form><p>Staff sessions expire after eight hours. No login is needed to publish a paste.</p>
-</section>`, undefined, undefined, { currentPath: "/login" });
+</section>`);
 	const headers = staffHeaders("text/html; charset=utf-8");
 	headers.set("content-security-policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 	return new Response(html, { status, headers });
@@ -173,7 +175,10 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
 	const url = new URL(request.url);
 	if (request.method === "GET" || request.method === "HEAD") {
 		const next = safeReturnTo(url.searchParams.get("next"), request);
-		return await authenticateStaff(request, env) ? authRedirect(next) : loginPage(next);
+		if (await authenticateStaff(request, env)) return authRedirect(next);
+		const response = loginPage(next);
+		response.headers.append('set-cookie', staffNavigationCookie(request, false));
+		return response;
 	}
 	if (request.method !== "POST") return methodNotAllowed(false);
 	if (!hasValidMutationOrigin(request, false)) return badRequest("invalid request origin", false, 403);
@@ -196,14 +201,14 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
 	if (!user) return loginPage(next, "Invalid username or password.", 401);
 	const token = await createSession(env, user.username);
 	await revokeSession(request, env); // Rotate any previous session after successful authentication.
-	return authRedirect(next, sessionCookie(request, token));
+	return authRedirect(next, sessionCookie(request, token), staffNavigationCookie(request, true));
 }
 
 export async function handleLogout(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed(false);
 	if (!sessionTransportAllowed(request) || !hasValidMutationOrigin(request, false)) return badRequest("invalid request origin", false, 403);
 	await revokeSession(request, env);
-	return authRedirect("/login", sessionCookie(request, "", 0));
+	return authRedirect("/login", sessionCookie(request, "", 0), staffNavigationCookie(request, false));
 }
 
 function parseListOptions(url: URL): { cursor?: string; limit: number } | Response {
@@ -379,11 +384,9 @@ const REVIEW_SCRIPT = `<script>
 })();
 </script>`;
 
-function staffPage(user: StaffUser, currentPath: string, title: string, content: string, script?: string): Response {
+function staffPage(user: StaffUser, title: string, content: string, script?: string): Response {
 	const body = `<div class="staff-heading"><h1>${escapeHtml(title)}</h1><div class="identity">signed in as <strong>${escapeHtml(user.username)}</strong> · ${escapeHtml(user.role)}</div></div>${content}`;
-	const html = layout(`${title} — cp.codes`, body, script, undefined, {
-		currentPath,
-		showStaffNavigation: true,
+	const html = layout(`${title} — cp.codes`, body, script, {
 		wide: true,
 		extraStylesheet: assetUrl('/admin.css'),
 	});
@@ -398,12 +401,12 @@ function reviewPage(user: StaffUser, page: paste.ReviewPastePage, options: Revie
 	const start = page.total === 0 ? 0 : page.offset + 1;
 	const end = page.offset + page.items.length;
 	const pager = `<div class="pager">${previous}<span class="muted">${start.toLocaleString("en-US")}–${end.toLocaleString("en-US")} of ${page.total.toLocaleString("en-US")}</span>${next}</div>`;
-	return staffPage(user, "/admin/pastes", "Moderation review", `${reviewFilters(options)}<section class="card">${pasteTable(page.items, returnTo)}${pager}</section>`, REVIEW_SCRIPT);
+	return staffPage(user, "Moderation review", `${reviewFilters(options)}<section class="card">${pasteTable(page.items, returnTo)}${pager}</section>`, REVIEW_SCRIPT);
 }
 
 function powSettingsPage(user: StaffUser, state: PowDifficultyState): Response {
 	const disabled = user.role !== "admin" ? " disabled" : "";
-	return staffPage(user, "/admin/pow", "Proof of work", `<section class="card">
+	return staffPage(user, "Proof of work", `<section class="card">
 <h2>Current difficulty</h2>
 <dl class="pow-fields">
 <dt>Minimum difficulty</dt><dd>${state.minimum_difficulty_bits} leading zero bits</dd>
@@ -471,12 +474,12 @@ async function handlePowSettings(request: Request, env: Env, user: StaffUser, ap
 }
 
 function usersPage(user: StaffUser, env: Env): Response {
-	return staffPage(user, "/admin/users", "Staff users", `<section class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th></tr></thead><tbody>${userTable(env)}</tbody></table></div></section>`);
+	return staffPage(user, "Staff users", `<section class="card"><div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th></tr></thead><tbody>${userTable(env)}</tbody></table></div></section>`);
 }
 
 function accessLogPage(user: StaffUser, accessLog: paste.PasteAccessLogPage, limit: number): Response {
 	const older = accessLog.next_before_id ? `<a class="button" href="/admin/access-log?limit=${limit}&amp;before_id=${accessLog.next_before_id}">Older events →</a>` : `<span class="muted">End of access log</span>`;
-	return staffPage(user, "/admin/access-log", "Access log", `<section class="card">${accessLogTable(accessLog.items)}<div class="pager">${older}</div></section>`);
+	return staffPage(user, "Access log", `<section class="card">${accessLogTable(accessLog.items)}<div class="pager">${older}</div></section>`);
 }
 
 type ModerationRequest = {
@@ -606,7 +609,7 @@ async function handleStaffPasteContent(request: Request, env: Env, id: string, m
 	const hitCount = await paste.getPasteHitCount(env, id);
 	if (mode === "view") {
 		// Unlike the canonical URL, review always displays URL pastes, never redirects.
-		const response = viewPage(stored, hitCount, true, true);
+		const response = viewPage(stored, hitCount, true);
 		response.headers.set("cache-control", "no-store, private");
 		response.headers.set("referrer-policy", "no-referrer");
 		response.headers.set("x-content-type-options", "nosniff");
@@ -637,7 +640,7 @@ export async function handleAdminRequest(request: Request, env: Env, url: URL, p
 	if (!user) {
 		const dataRoute = /\/(raw|content)$/.test(path) || /^\/admin\/paste\/CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10})$/.test(path);
 		if (!api && !dataRoute && (request.method === "GET" || request.method === "HEAD")) {
-			return authRedirect(`/login?next=${encodeURIComponent(url.pathname + url.search)}`);
+			return authRedirect(`/login?next=${encodeURIComponent(url.pathname + url.search)}`, undefined, staffNavigationCookie(request, false));
 		}
 		return unauthorized(api, request);
 	}

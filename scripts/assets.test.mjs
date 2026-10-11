@@ -9,6 +9,7 @@ const { CLIENT_ASSET_VERSIONS, assetUrl, withAssetCachePolicy } = await import(
 	`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 const immutable = 'public, max-age=31536000, immutable';
 const revalidate = 'public, max-age=0, must-revalidate';
+const editorManifest = JSON.parse(await readFile('public/lib/codemirror/manifest.json', 'utf8'));
 
 test('every application JS/CSS asset has one version and all client references agree', async () => {
 	for (const file of await readdir('public')) {
@@ -26,7 +27,7 @@ test('every application JS/CSS asset has one version and all client references a
 
 test('current versions and pinned vendors receive a year of immutable caching', () => {
 	for (const path of [...Object.keys(CLIENT_ASSET_VERSIONS).map(assetUrl),
-		'/lib/uqr-0.1.2.js', '/lib/markdown-it-14.1.0.js', '/lib/hash-wasm-4.12.0.js']) {
+		'/lib/uqr-0.1.2.js', '/lib/markdown-it-14.1.0.js', '/lib/hash-wasm-4.12.0.js', ...editorManifest.files]) {
 		for (const status of [200, 304]) {
 			const response = withAssetCachePolicy(new Request(`https://cp.codes${path}`),
 				new Response(null, { status, headers: { etag: '"asset"', 'content-type': 'text/javascript' } }));
@@ -76,7 +77,7 @@ after(async () => { await mf?.dispose(); });
 
 test('Worker applies the policy through both asset routes for GET and HEAD', async () => {
 	for (const origin of ['https://cp.codes', 'http://localhost:8787']) {
-		for (const path of [assetUrl('/app.js'), assetUrl('/wordlist.js'), '/lib/markdown-it-14.1.0.js']) {
+		for (const path of [assetUrl('/app.js'), assetUrl('/wordlist.js'), '/lib/markdown-it-14.1.0.js', editorManifest.imports['@codemirror/view']]) {
 			for (const method of ['GET', 'HEAD']) {
 				const response = await mf.dispatchFetch(`${origin}${path}`, { method });
 				assert.equal(response.status, 200);
@@ -93,15 +94,22 @@ test('application HTML stays private and uses registry versions', async () => {
 	assert.equal(response.headers.get('cache-control'), 'no-store, private');
 	const html = await response.text();
 	assert.ok(html.includes(`src="${assetUrl('/app.js')}"`));
-	assert.ok(html.includes(`href="${assetUrl('/style.css')}"`));
-	assert.ok(html.includes(`<script type="module" src="${assetUrl('/theme.js')}" blocking="render"></script>`));
+	assert.ok(html.includes(`<link rel="stylesheet" href="${assetUrl('/style.css')}" />`));
+	assert.ok(html.includes(`<script src="${assetUrl('/site.js')}"></script>`));
+	assert.doesNotMatch(html, /data-site-style|data-site-script/);
+	const importMap = JSON.parse(html.match(/<script type="importmap">(.*?)<\/script>/s)[1]);
+	assert.deepEqual(importMap.imports, editorManifest.imports);
+	assert.ok(Object.values(importMap.imports).every(path => path.startsWith('/lib/codemirror/')));
+	assert.ok(html.includes(`<script type="module" src="${assetUrl('/app.js')}"></script>`));
 	const firstKilobyte = Buffer.from(html).subarray(0, 1024).toString();
-	const themePosition = html.indexOf(`src="${assetUrl('/theme.js')}"`);
-	const stylePosition = html.indexOf(`href="${assetUrl('/style.css')}"`);
-	assert.ok(themePosition < stylePosition && stylePosition < html.indexOf('rel="modulepreload"'));
-	for (const path of ['/authorization.js', '/content_type.js', '/media.js', '/files.js', '/policy.js', '/wordlist.js']) {
+	const sitePosition = html.indexOf('<script src="/site.js?');
+	const stylePosition = html.indexOf('<link rel="stylesheet" href="/style.css?');
+	assert.ok(html.indexOf('rel="modulepreload"') < stylePosition && stylePosition < html.indexOf('</head>'));
+	assert.ok(sitePosition > html.indexOf('<header>') && sitePosition < html.indexOf(`src="${assetUrl('/app.js')}"`));
+	for (const path of ['/content_type.js', '/files.js', '/policy.js']) {
 		assert.ok(firstKilobyte.includes(`<link rel="modulepreload" href="${assetUrl(path)}" />`), `${path} preload appears in the first kilobyte`);
 	}
-	assert.doesNotMatch(html, /cp\.codes\.theme/);
-	assert.doesNotMatch(html, /theme-toggle|theme-icon-sun|theme-icon-moon/);
+	assert.doesNotMatch(html, /rel="modulepreload"[^>]*(?:authorization|wordlist|media|markdown|highlight|qr_text)\.js/);
+	assert.ok(html.includes("localStorage.getItem('cp.codes.theme') || 'light'"));
+	assert.doesNotMatch(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, ''), /theme-toggle|theme-icon-sun|theme-icon-moon/);
 });

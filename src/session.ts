@@ -78,6 +78,12 @@ export function sessionCookie(request: Request, token: string, maxAge = SESSION_
 	return `${cookieName(request)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isLocalHttp(request) ? "" : "; Secure"}`;
 }
 
+/** Readable UI hint only. This cookie never grants access or contains credentials. */
+export function staffNavigationCookie(request: Request, enabled: boolean): string {
+	const name = isLocalHttp(request) ? 'cp_staff_nav' : '__Host-cp_staff_nav';
+	return `${name}=${enabled ? '1' : ''}; Path=/; SameSite=Lax; Max-Age=${enabled ? SESSION_TTL_SECONDS : 0}${isLocalHttp(request) ? '' : '; Secure'}`;
+}
+
 async function sessionStub(env: Env, token: string): Promise<DurableObjectStub<StaffSession>> {
 	// Neither durable object names nor stored session records contain the bearer token.
 	return env.STAFF_SESSIONS.getByName(`session:${await sha256Hex(token)}`);

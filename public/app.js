@@ -4,10 +4,8 @@
  * Web Crypto when available and lazily loads hash-wasm as a fallback.
  */
 import { contentTypeForFilename, detectContentType } from "./content_type.js?v=8";
-import { MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType } from "./media.js?v=1";
-import { createFileEditor } from './files.js?v=33';
+import { createFileEditor } from './files.js?v=34';
 import { MAX_UPLOAD_BYTES } from './policy.js?v=1';
-import { storeAuthorization } from './authorization.js?v=1';
 
 const contentEl = document.getElementById("content");
 const filenameEl = document.getElementById("filename");
@@ -58,8 +56,6 @@ function setBusy(busy) {
 	fileButtonEl.disabled = busy;
 	const addText = document.getElementById('add-text');
 	if (addText) addText.disabled = busy;
-	const previewButton = document.getElementById('preview-file');
-	if (previewButton) previewButton.disabled = busy;
 	progressEl.style.display = busy ? "block" : "none";
 	progressEl.setAttribute("aria-hidden", busy ? "false" : "true");
 }
@@ -118,9 +114,10 @@ async function verifyDecodableImage(dataUrl) {
 }
 
 async function loadFile(file) {
-	const hintedMediaType = mediaTypeHint(file);
 	setStatus(`Reading “${file.name}”…`);
 	if (typeof MAX_UPLOAD_BYTES === 'number' && file.size > MAX_UPLOAD_BYTES) { setStatus('File exceeds the 8 MiB upload limit.', 'err'); return; }
+	const { MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes } = await loadMedia();
+	const hintedMediaType = mediaTypeHint(file);
 	let bytes;
 	try {
 		bytes = new Uint8Array(await file.arrayBuffer());
@@ -183,6 +180,7 @@ async function loadFiles(files) {
 	if (isBusy) return;
 	setBusy(true);
 	try { for (const file of files) await loadFile(file); }
+	catch (error) { setStatus(error instanceof Error ? error.message : String(error), 'err'); }
 	finally { setBusy(false); }
 }
 fileInputEl.addEventListener('change', () => {
@@ -227,7 +225,10 @@ dropTarget?.addEventListener("paste", (event) => {
 			.map((item) => item.kind === "file" ? item.getAsFile() : null)
 			.filter((file) => file !== null);
 	}
-	const mediaFiles = files.filter((file) => mediaTypeHint(file));
+	// Decide synchronously whether to intercept the clipboard gesture; validation loads later.
+	const mediaFiles = files.filter(file =>
+		/^(?:image\/(?:png|jpeg|webp|gif)|audio\/(?:mpeg|mp3|mp4)|video\/mp4|application\/mp4)(?:;|$)/i.test(file.type) ||
+		['png', 'jpeg', 'webp', 'gif', 'mp3', 'mp4'].includes(contentTypeForFilename(file.name)));
 	if (mediaFiles.length === 0) return;
 	event.preventDefault();
 	void loadFiles(mediaFiles);
@@ -470,6 +471,9 @@ async function solvePow(challenge) {
 	});
 }
 
+function loadMedia() { return import('./media.js?v=1'); }
+function loadAuthorization() { return import('./authorization.js?v=2'); }
+
 async function publish() {
 	if (isBusy || !consentEl.checked || !moderationConsentEl.checked) return;
 	const unlisted = !listedEl.checked;
@@ -497,13 +501,14 @@ async function publish() {
 			return;
 		}
 	}
-	if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(contentType) && mediaDataUrlType(content) !== contentType) {
-		setStatus(`Media content must be a valid base64 ${contentType.toUpperCase()} data URL.`, "err");
-		return;
-	}
-
 	setBusy(true);
 	try {
+		if (["png", "jpeg", "webp", "gif", "mp3", "mp4"].includes(contentType)) {
+			const { mediaDataUrlType } = await loadMedia();
+			if (mediaDataUrlType(content) !== contentType) throw new Error(`Media content must be a valid base64 ${contentType.toUpperCase()} data URL.`);
+		}
+		// Load before uploading so a failed import cannot strand a newly issued credential.
+		const { storeAuthorization } = await loadAuthorization();
 		if (["png", "jpeg", "webp", "gif"].includes(contentType)) {
 			setStatus(`Validating ${contentType.toUpperCase()} image…`);
 			await verifyDecodableImage(content.trim());

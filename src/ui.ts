@@ -12,53 +12,9 @@ import {
 import { CONTENT_TYPE_LABELS, fileExtension } from "./content_type";
 import { POW_DEFAULTS } from "./pow";
 import { assetUrl } from './assets';
+import editorManifest from '../public/lib/codemirror/manifest.json';
 
-const EDITOR_PACKAGES: Record<string, string> = {
-	"@codemirror/autocomplete": "6.20.3/dist/index.js",
-	"@codemirror/commands": "6.11.1/dist/index.js",
-	"@codemirror/lang-cpp": "6.0.3/dist/index.js",
-	"@codemirror/lang-css": "6.3.1/dist/index.js",
-	"@codemirror/lang-go": "6.0.1/dist/index.js",
-	"@codemirror/lang-html": "6.4.12/dist/index.js",
-	"@codemirror/lang-java": "6.0.2/dist/index.js",
-	"@codemirror/lang-javascript": "6.2.5/dist/index.js",
-	"@codemirror/lang-json": "6.0.2/dist/index.js",
-	"@codemirror/lang-markdown": "6.5.2/dist/index.js",
-	"@codemirror/lang-php": "6.0.2/dist/index.js",
-	"@codemirror/lang-python": "6.2.1/dist/index.js",
-	"@codemirror/lang-rust": "6.0.2/dist/index.js",
-	"@codemirror/lang-sql": "6.10.0/dist/index.js",
-	"@codemirror/lang-xml": "6.1.0/dist/index.js",
-	"@codemirror/lang-yaml": "6.1.3/dist/index.js",
-	"@codemirror/language": "6.13.1/dist/index.js",
-	"@codemirror/lint": "6.9.7/dist/index.js",
-	"@codemirror/state": "6.7.6/dist/index.js",
-	"@codemirror/streamparser": "6.0.0/dist/index.js",
-	"@codemirror/view": "6.43.14/dist/index.js",
-	"@lezer/common": "1.5.3/dist/index.js",
-	"@lezer/cpp": "1.1.6/dist/index.js",
-	"@lezer/css": "1.3.9/dist/index.js",
-	"@lezer/go": "1.0.1/dist/index.js",
-	"@lezer/highlight": "1.2.5/dist/index.js",
-	"@lezer/html": "1.3.13/dist/index.js",
-	"@lezer/java": "1.1.5/dist/index.js",
-	"@lezer/javascript": "1.5.6/dist/index.js",
-	"@lezer/json": "1.0.3/dist/index.js",
-	"@lezer/lr": "1.4.11/dist/index.js",
-	"@lezer/markdown": "1.8.0/dist/index.js",
-	"@lezer/php": "1.0.6/dist/index.js",
-	"@lezer/python": "1.1.19/dist/index.js",
-	"@lezer/rust": "1.0.3/dist/index.js",
-	"@lezer/xml": "1.0.6/dist/index.js",
-	"@lezer/yaml": "1.0.4/dist/index.js",
-	"@marijn/find-cluster-break": "1.0.4/src/index.js",
-	crelt: "1.0.7/index.js",
-	"style-mod": "4.1.4/src/style-mod.js",
-	"w3c-keyname": "2.2.8/index.js",
-};
-const EDITOR_IMPORT_MAP = JSON.stringify({
-	imports: Object.fromEntries(Object.entries(EDITOR_PACKAGES).map(([name, path]) => [name, `https://cdn.jsdelivr.net/npm/${name}@${path}`])),
-});
+const EDITOR_IMPORT_MAP = JSON.stringify({ imports: editorManifest.imports });
 
 function escapeHtml(s: string): string {
 	return s
@@ -70,71 +26,44 @@ function escapeHtml(s: string): string {
 }
 
 export type LayoutOptions = {
-	currentPath?: string;
-	showStaffNavigation?: boolean;
 	wide?: boolean;
 	extraStylesheet?: string;
 	showFooter?: boolean;
 	resourceHints?: string;
 };
 
-function navigation(currentPath: string, showStaffNavigation: boolean): string {
-	const link = (href: string, label: string, className = "") =>
-		`<a${className ? ` class="${className}"` : ""} href="${href}"${currentPath === href ? ` aria-current="page"` : ""}>${label}</a>`;
-	const staffLinks = showStaffNavigation
-		? `${link("/admin/pastes", "review", "staff-nav-start")}
-        ${link("/admin/pow", "PoW")}
-        ${link("/admin/users", "users")}
-        ${link("/admin/access-log", "log")}
-        <form class="nav-logout" method="post" action="/logout"><button type="submit">log out</button></form>`
-		: "";
-	return `<nav class="site-nav" aria-label="Primary navigation">
-        ${link("/", "new")}
-        ${link("/pastes", "pastes")}
-        ${link("/about", "about")}
-        ${staffLinks}
-      </nav>`;
-}
-
 export function layout(
 	title: string,
 	body: string,
 	script?: string,
-	headerPath?: string,
 	options: LayoutOptions = {},
 ): string {
-	const headerLogo = headerPath
-		? `<span class="logo"><a href="/">cp<span>.codes</span></a><a href="/${escapeHtml(headerPath)}"><span>/</span>${escapeHtml(headerPath)}</a></span>`
-		: `<a class="logo" href="/">cp<span>.codes/</span></a>`;
-	const currentPath = options.currentPath ?? (headerPath ? `/${headerPath}` : "");
-	const footer = options.showFooter === false ? "" : `<ul class="footer">
-      <li>AI-cleared pastes are limited to their uploader and three other IPs. Human approval is required for public distribution. Unlisted links are not secret storage.</li>
-      <li>Operators may hide or delete content at any time for any reason.</li>
-      <li>Access to your paste may be limited until a moderator approves wider distribution.</li>
-      <li>IP and location metadata are logged for paste uploads and accesses; access logs also retain the HTTP Referer. They are used for abuse prevention and made available upon lawful request.</li>
-    </ul>`;
+	const footer = options.showFooter === false ? "" : '<ul class="footer"></ul>';
 	return `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
-  <meta charset="utf-8" />
-  <script type="module" src="${assetUrl('/theme.js')}" blocking="render"></script>
-  <link rel="stylesheet" href="${assetUrl('/style.css')}" />
-  ${options.extraStylesheet ? `<link rel="stylesheet" href="${escapeHtml(options.extraStylesheet)}" />` : ""}
-  ${options.resourceHints ?? ""}
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(title)}</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="${assetUrl('/favicon-32.png')}" />
-  <link rel="icon" type="image/svg+xml" sizes="any" href="${assetUrl('/favicon.svg')}" />
+	<meta charset="utf-8" />
+	<title>${escapeHtml(title)}</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	${options.resourceHints ?? ""}
+	<link rel="stylesheet" href="${assetUrl('/style.css')}" />
+	<script type="text/javascript">
+		try {
+			const theme = localStorage.getItem('cp.codes.theme') || 'light';
+			document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : 'light';
+		} catch {}
+	</script>
+	${options.extraStylesheet ? `<link rel="stylesheet" href="${escapeHtml(options.extraStylesheet)}" />` : ""}
+	<link rel="icon" type="image/png" sizes="32x32" href="${assetUrl('/favicon-32.png')}" />
+	<link rel="icon" type="image/svg+xml" sizes="any" href="${assetUrl('/favicon.svg')}" />
 </head>
 <body>
-  <div class="wrap${options.wide ? " wide" : ""}">
-    <header>
-      ${headerLogo}
-      ${navigation(currentPath, options.showStaffNavigation === true)}
-    </header>
-    ${body}
-    ${footer}
+	<div class="wrap${options.wide ? " wide" : ""}">
+	<header></header>
+	${body}
+	${footer}
   </div>
+  <script src="${assetUrl('/site.js')}"></script>
   ${script ?? ""}
 </body>
 </html>`;
@@ -161,11 +90,11 @@ function recentSection(recent: RecentPaste[], standalone = false, listing?: Publ
 ${recent
 	.map(
 		(p) => `  <tr>
-    <td><a class="recent-id" href="/${escapeHtml(p.id)}">${escapeHtml(p.id)}</a></td>
-    <td class="recent-filename" title="${escapeHtml(p.primary ?? p.filename ?? '')}">${escapeHtml(p.primary ?? p.filename ?? '—')}</td>
-    <td class="recent-hits">${Number.isSafeInteger(p.hit_count) && p.hit_count >= 0 ? p.hit_count.toLocaleString("en-US") : '0'}</td>
-    <td class="recent-bytes">${p.byte_length.toLocaleString("en-US")}</td>
-    <td class="recent-meta">${formatWhen(p.created_at)}</td>
+	<td><a class="recent-id" href="/${escapeHtml(p.id)}">${escapeHtml(p.id)}</a></td>
+	<td class="recent-filename" title="${escapeHtml(p.primary ?? p.filename ?? '')}">${escapeHtml(p.primary ?? p.filename ?? '—')}</td>
+	<td class="recent-hits">${Number.isSafeInteger(p.hit_count) && p.hit_count >= 0 ? p.hit_count.toLocaleString("en-US") : '0'}</td>
+	<td class="recent-bytes">${p.byte_length.toLocaleString("en-US")}</td>
+	<td class="recent-meta">${formatWhen(p.created_at)}</td>
   </tr>`,
 	)
 	.join("\n")}
@@ -196,7 +125,7 @@ function publicPasteNavigation(listing: PublicPastePage): string {
 	return `<nav class="paste-pagination" aria-label="Paste pages">${previous}<span class="meta">Page ${listing.page} of ${listing.total_pages} · ${first}–${last} of ${listing.total} pastes</span>${next}</nav>`;
 }
 
-function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigation = false, listing?: PublicPastePage): Response {
+function sitePage(page: SitePage, recent: RecentPaste[] = [], listing?: PublicPastePage): Response {
 	const d = POW_DEFAULTS.difficultyBits;
 	const p50 = Math.ceil(Math.LN2 * 2 ** d);
 	const average = 2 ** d;
@@ -219,9 +148,8 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
     <label class="check-control"><input type="checkbox" id="listed" checked /><span>List publicly on <a href="/pastes">cp.codes/pastes</a>. All pastes are public and can be accessed to anyone who has (or can guess) its link.</span></label>
     <label class="check-control consent-control"><input type="checkbox" id="consent" /><span>I consent to the collection and storage of <a href="/client-info">my IP and location data</a>.</span></label>
     <label class="check-control consent-control"><input type="checkbox" id="consent-moderation" /><span>I consent to sending paste data to <a href="/about#service-providers">service providers</a> for automated moderation. Uncertain content and media need human review before access.</span></label>
-    <div class="row"><button type="button" id="publish" disabled>Publish</button><button type="button" id="preview-file" aria-pressed="false">Preview</button></div>
+    <div class="row"><button type="button" id="publish" disabled>Publish</button></div>
     <p class="meta"><span id="bytes">0 bytes</span> (max. 8 MiB) · <span id="proof-estimate">estimating…</span></p>
-    <div id="draft-preview" class="editor-preview" hidden></div>
   </div>
   <div class="progress" id="progress" aria-hidden="true"><i></i></div>
   <div class="status" id="status" role="status" aria-live="polite"></div>
@@ -262,10 +190,10 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
 <script type="module" src="${assetUrl('/app.js')}"></script>`
 		: undefined;
 	const resourceHints = page === "new"
-		? (['/authorization.js', '/media.js', '/wordlist.js', '/content_type.js', '/files.js', '/policy.js'] as const)
+		? (['/content_type.js', '/files.js', '/policy.js'] as const)
 			.map(path => `<link rel="modulepreload" href="${assetUrl(path)}" />`).join("\n  ")
 		: undefined;
-	const html = layout(titles[page], body, script, page, { showStaffNavigation, resourceHints });
+	const html = layout(titles[page], body, script, { resourceHints });
 	return new Response(html, {
 		headers: {
 			"content-type": "text/html; charset=utf-8",
@@ -275,19 +203,19 @@ function sitePage(page: SitePage, recent: RecentPaste[] = [], showStaffNavigatio
 	});
 }
 
-export function aboutPage(showStaffNavigation = false): Response {
-	return sitePage("about", [], showStaffNavigation);
+export function aboutPage(): Response {
+	return sitePage("about");
 }
 
-export function pastesPage(listing: PublicPastePage, showStaffNavigation = false): Response {
-	return sitePage("pastes", listing.items, showStaffNavigation, listing);
+export function pastesPage(listing: PublicPastePage): Response {
+	return sitePage("pastes", listing.items, listing);
 }
 
-export function newPage(showStaffNavigation = false): Response {
-	return sitePage("new", [], showStaffNavigation);
+export function newPage(): Response {
+	return sitePage("new");
 }
 
-export function clientInfoPage(metadata: PasteUploadMetadata, showStaffNavigation = false): Response {
+export function clientInfoPage(metadata: PasteUploadMetadata): Response {
 	const rows = Object.entries(metadata).map(([name, value]) => {
 		const displayed = value == null
 			? `<span class="client-info-null">not available</span>`
@@ -301,7 +229,7 @@ export function clientInfoPage(metadata: PasteUploadMetadata, showStaffNavigatio
 ${rows}
   </dl>
 </section>`;
-	return new Response(layout("Client info — cp.codes", body, undefined, "client-info", { showStaffNavigation }), {
+	return new Response(layout("Client info — cp.codes", body), {
 		headers: {
 			"content-type": "text/html; charset=utf-8",
 			"cache-control": "no-store, private",
@@ -322,7 +250,7 @@ function authorizationPassphrase(): string {
 
 const VIEW_MODULE_URL = assetUrl('/view.js');
 
-export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigation = false, staffReview = false): Response {
+export function viewPage(paste: StoredPaste, hitCount: number, staffReview = false): Response {
 	const id = escapeHtml(paste.id);
 	const typeLabel = CONTENT_TYPE_LABELS[paste.content_type];
 	const rawUrl = staffReview ? `/admin/paste/${id}/raw` : `/${id}.${fileExtension(paste.content_type)}`;
@@ -338,11 +266,12 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
 		report_categories: REPORT_CATEGORIES,
 		max_report_email_chars: MAX_REPORT_EMAIL_CHARS,
 	}));
-	// Keep these after the theme module and CSS, within the first KiB.
+	// Discover content early, but let the site module and CSS win bandwidth for the shell's first paint.
+	// Keep these after the site module and CSS, within the first KiB.
 	// Anonymous CORS matches fetch()'s default mode and same-origin credentials.
 	const resourceHints = `<link rel="preload" href="${contentUrl}" as="fetch" crossorigin="anonymous" />
-  ${(['/authorization.js', '/media.js', '/wordlist.js', '/markdown.js', '/highlight.js', '/qr_text.js'] as const).map(assetUrl)
-		.map(url => `<link rel="modulepreload" href="${url}" />`).join("\n  ")}`;
+  <link rel="preload" href="${assetUrl('/highlight.css')}" as="style"/>
+  <link rel="modulepreload" href="${assetUrl('/authorization_storage.js')}" />`;
 	const filename = paste.filename ? ` · <strong>${escapeHtml(paste.filename)}</strong>` : "";
 	const visibility = paste.unlisted ? " · unlisted" : "";
 	const body = `
@@ -350,6 +279,7 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
   <section class="paste-head">
     ${staffReview ? `<p class="status">Staff review — content remains subject to its current visibility. <a href="/admin/pastes">← moderation</a></p><div class="row"><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="approve"/><button type="submit">Approve public access</button></form><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="classify"/><select name="reason" aria-label="Restriction reason" required><option value="">Restriction reason…</option>${REPORT_CATEGORIES.map(reason => `<option>${escapeHtml(reason)}</option>`).join('')}</select> <button class="danger" type="submit">Restrict &amp; hide</button></form></div>` : ""}
     <div class="meta">${formatWhen(paste.created_at)} · ${paste.byte_length} bytes · <span id="paste-hit-count">${formatHitCount(hitCount)}</span> · <span class="type-badge">${escapeHtml(typeLabel)}</span>${filename}${visibility}</div>
+    <div class="paste-toolbar"></div>
   </section>
   <section class="card paste-card" style="padding:0; overflow:hidden;">
     ${paste.format && (paste.files?.length ?? 0) > 1 ? `<nav class="paste-file-nav" id="paste-file-nav" role="tablist" aria-label="Paste files" hidden></nav>` : ''}
@@ -363,8 +293,7 @@ export function viewPage(paste: StoredPaste, hitCount: number, showStaffNavigati
 		`cp.codes/${paste.id}`,
 		body,
 		`<script type="module" src="${VIEW_MODULE_URL}"></script>`,
-		paste.id,
-		{ showStaffNavigation, resourceHints },
+		{ resourceHints },
 	);
 	return new Response(html, {
 		headers: {
@@ -382,13 +311,11 @@ export function reviewRequiredPage(id: string, message: string, status = 423): R
 	});
 }
 
-export function notFoundPage(message = "Not found", showStaffNavigation = false): Response {
+export function notFoundPage(message = "Not found"): Response {
 	const html = layout(
 		"Not found — cp.codes",
 		`<section class="card"><p class="status err">${escapeHtml(message)}</p><p><a href="/">← new paste</a></p></section>`,
 		undefined,
-		undefined,
-		{ showStaffNavigation },
 	);
 	return new Response(html, {
 		status: 404,
