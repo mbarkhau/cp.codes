@@ -798,12 +798,19 @@ async function handleGetPaste(
 			description: stored.description,
 			filename: stored.filename,
 			unlisted: stored.unlisted,
+			proof_of_work: stored.proof_of_work,
+			type_label: contentType.CONTENT_TYPE_LABELS[stored.content_type],
+			raw_url: moderation.visibility === 'hidden' ? `/admin/paste/${stored.id}/raw` : `/${stored.id}.${contentType.fileExtension(stored.content_type)}`,
+			staff_review: moderation.visibility === 'hidden',
+			offline_cacheable: moderation.visibility === 'visible' && moderation.decision === 'approved',
+			report_categories: paste.REPORT_CATEGORIES,
+			max_report_email_chars: paste.MAX_REPORT_EMAIL_CHARS,
 			hit_count: hitCount,
 			decoded: parts,
 		}, 200, { "cache-control": "no-store" });
 	}
 
-	return ui.viewPage(stored, hitCount, moderation.visibility === "hidden");
+	return ui.viewPage(stored, hitCount, moderation.visibility === "hidden", moderation.visibility === 'visible' && moderation.decision === 'approved');
 }
 
 /** Serve the exact R2 representation for client-side decompression. */
@@ -904,6 +911,15 @@ async function handleReportPaste(request: Request, env: Env, id: string): Promis
 }
 
 async function handleListPastes(url: URL, env: Env): Promise<Response> {
+	// The paginated archive is distinct from the backwards-compatible recent feed.
+	if (url.searchParams.has('page') || url.searchParams.has('q')) {
+		const rawPage = url.searchParams.get('page') ?? '1';
+		const page = Number(rawPage);
+		if (!/^[1-9]\d*$/.test(rawPage) || !Number.isSafeInteger(page)) return error('page must be a positive safe integer');
+		const q = paste.normalizePasteIdSearch(url.searchParams.get('q') ?? '');
+		if (q === null) return error('q must be a paste ID or prefix starting with CP (up to 12 characters)');
+		return json(await paste.listPublicPastesPage(env, page, q));
+	}
 	const rawLimit = url.searchParams.get("limit");
 	let limit = paste.RECENT_PASTE_LIMIT;
 	if (rawLimit != null && rawLimit !== "") {
@@ -1020,6 +1036,21 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext, t
 			return ui.newPage();
 		}
 
+		if (path === '/app-shell') {
+			if (method !== 'GET' && method !== 'HEAD') return error('Method Not Allowed', 405);
+			return ui.appShellPage();
+		}
+
+		if (path === '/new-shell') {
+			if (method !== 'GET' && method !== 'HEAD') return error('Method Not Allowed', 405);
+			return ui.newShellPage();
+		}
+
+		if (path === '/about-shell') {
+			if (method !== 'GET' && method !== 'HEAD') return error('Method Not Allowed', 405);
+			return ui.aboutShellPage();
+		}
+
 		if (path === "/about") {
 			if (method !== "GET" && method !== "HEAD") return error("Method Not Allowed", 405);
 			return ui.aboutPage();
@@ -1030,7 +1061,9 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext, t
 			const rawPage = url.searchParams.get('page') ?? '1';
 			const page = Number(rawPage);
 			if (!/^[1-9]\d*$/.test(rawPage) || !Number.isSafeInteger(page)) return error('page must be a positive safe integer');
-			const listing = await paste.listPublicPastesPage(env, page);
+			const q = paste.normalizePasteIdSearch(url.searchParams.get('q') ?? '');
+			if (q === null) return error('q must be a paste ID or prefix starting with CP (up to 12 characters)');
+			const listing = await paste.listPublicPastesPage(env, page, q);
 			return ui.pastesPage(listing);
 		}
 

@@ -19,6 +19,9 @@ import worker from './src/index.ts';
 import { pasteIndexStub } from './src/paste.ts';
 import { PasteIndex } from './src/index.ts';
 export class PaginationTestIndex extends PasteIndex {
+ searchPlan() {
+  return this.ctx.storage.sql.exec("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM paste_records p INDEXED BY paste_records_public_id JOIN paste_moderation_state s ON s.paste_id = p.paste_id WHERE p.listed = 1 AND s.decision = 'approved' AND s.visibility = 'visible' AND COALESCE(json_extract(p.metadata_json, '$.unlisted'), 0) = 0 AND p.paste_id >= ? AND p.paste_id < ?", 'CP000002', 'CP000002' + String.fromCharCode(65535)).toArray();
+ }
  legacySchema() { this.ctx.storage.sql.exec('ALTER TABLE paste_records DROP COLUMN preview'); }
  seedModels(rows) {
   for (const { paste_id, model, prompt_version } of rows) {
@@ -51,6 +54,7 @@ export default { async fetch(request, env, ctx) {
   return Response.json({ ok: true });
  }
  if (url.pathname === '/__legacy') { await env.PASTE_INDEX.getByName('paste-index').legacySchema(); return Response.json({ ok: true }); }
+ if (url.pathname === '/__search-plan') return Response.json(await env.PASTE_INDEX.getByName('paste-index').searchPlan());
  if (url.pathname === '/__models') {
   const index = env.PASTE_INDEX.getByName('paste-index');
   if (request.method === 'POST') { await index.seedModels(await request.json()); return Response.json({ ok: true }); }
@@ -109,6 +113,27 @@ test('middle and last pages have correct ranges, links, and no duplicates or omi
 	assert.equal(new Set([...ids(first), ...ids(second), ...ids(last)]).size, 102);
 });
 
+test('archive JSON matches HTML pagination without changing the recent-feed API', async () => {
+	for (const page of [1, 2, 3]) {
+		const response = await fetch(`/api/pastes?page=${page}`);
+		assert.equal(response.status, 200);
+		assert.match(response.headers.get('cache-control'), /no-store/);
+		const listing = await response.json();
+		assert.equal(listing.page, page);
+		assert.equal(listing.page_size, 50);
+		assert.equal(listing.total, 102);
+		assert.deepEqual(listing.items.map(item => item.id), ids(await (await fetch(`/pastes?page=${page}`)).text()));
+		assert.doesNotMatch(JSON.stringify(listing), /upload_metadata|proof_of_work|private-audit-marker/);
+	}
+	for (const page of ['', '0', '-1', '1.5', '2junk', '9007199254740992']) {
+		assert.equal((await fetch(`/api/pastes?page=${page}`)).status, 400);
+	}
+	const recent = await (await fetch('/api/pastes?limit=2')).json();
+	assert.equal(recent.limit, 2);
+	assert.ok(Array.isArray(recent.items));
+	assert.equal(recent.page_size, undefined);
+});
+
 test('SQL pagination never returns unreviewed, restricted, hidden, deleted or unlisted entries or private metadata', async () => {
 	for (const page of [1, 2, 3]) {
 		const data = await (await fetch(`/__page?page=${page}`)).json();
@@ -116,6 +141,65 @@ test('SQL pagination never returns unreviewed, restricted, hidden, deleted or un
 		assert.ok(data.items.every(item => Number(item.id.slice(2)) <= 102));
 		assert.doesNotMatch(JSON.stringify(data), /upload_metadata|proof_of_work|private-audit-marker/);
 	}
+});
+
+test('paste ID search matches full IDs and prefixes case-insensitively, never filenames or interior substrings', async () => {
+	for (const [q, expected] of [[' cp000002 ', [id(2)]], ['CP0001', [id(102), id(101), id(100)]], ['CP00000', Array.from({ length: 9 }, (_, index) => id(9 - index))], ['CPXYZ', []], ['CP002', []]]) {
+		const response = await fetch(`/api/pastes?q=${encodeURIComponent(q)}`);
+		assert.equal(response.status, 200);
+		const listing = await response.json();
+		assert.equal(listing.q, q.trim().toUpperCase());
+		assert.equal(listing.total, expected.length);
+		assert.deepEqual(listing.items.map(item => item.id), expected);
+		assert.equal(listing.page, 1);
+		assert.equal(listing.page_size, 50);
+		assert.deepEqual(ids(await (await fetch(`/pastes?q=${encodeURIComponent(q)}`)).text()), expected);
+	}
+	const all = await (await fetch('/api/pastes?q=')).json();
+	assert.equal(all.total, 102);
+	assert.equal(all.q, undefined);
+	assert.equal((await fetch('/api/pastes?q=note2.txt')).status, 400);
+});
+
+test('ID search excludes all nonpublic states, even for an exact ID', async () => {
+	for (let number = 103; number <= 108; number++) {
+		const listing = await (await fetch(`/api/pastes?q=${id(number)}`)).json();
+		assert.equal(listing.total, 0, id(number));
+		assert.deepEqual(listing.items, []);
+		assert.doesNotMatch(JSON.stringify(listing), /private-audit-marker|upload_metadata|proof_of_work/);
+	}
+	const listing = await (await fetch('/api/pastes?q=CP00010')).json();
+	assert.deepEqual(listing.items.map(item => item.id), [id(102), id(101), id(100)]);
+});
+
+test('search preserves its query through pagination and supplies a GET form, clear link and empty state', async () => {
+	const first = await (await fetch('/pastes?q=cp0000')).text();
+	assert.equal(ids(first).length, 50);
+	assert.match(first, /Page 1 of 2 · 1–50 of 99 pastes/);
+	assert.match(first, /href="\/pastes\?page=2&amp;q=CP0000" rel="next"/);
+	assert.match(first, /<form[^>]*method="get" action="\/pastes"[^>]*role="search"/);
+	assert.match(first, /name="q" value="CP0000"/);
+	assert.match(first, /href="\/pastes">Clear<\/a>/);
+	const second = await (await fetch('/pastes?page=2&q=CP0000')).text();
+	assert.deepEqual(ids(second), Array.from({ length: 49 }, (_, index) => id(49 - index)));
+	assert.match(second, /href="\/pastes\?page=1&amp;q=CP0000" rel="prev"/);
+	const listing = await (await fetch('/api/pastes?q=CP0000&page=2')).json();
+	assert.deepEqual(listing.items.map(item => item.id), ids(second));
+	const empty = await (await fetch('/pastes?q=CPXYZ&page=999')).text();
+	assert.match(empty, /No public pastes match this ID or prefix/);
+	assert.doesNotMatch(empty, /aria-label="Paste pages"/);
+});
+
+test('malformed searches are rejected before SQL, and ID lookup uses an indexed range', async () => {
+	for (const q of ['CP%', 'CP_', "CP' OR 1=1 --", '<script>', 'CP00000000000', 'CPW', 'CPé', '000002']) {
+		for (const path of ['/pastes', '/api/pastes']) {
+			assert.equal((await fetch(`${path}?q=${encodeURIComponent(q)}`)).status, 400, q);
+		}
+	}
+	assert.equal((await fetch('/pastes?q=CP000002', { method: 'HEAD' })).status, 200);
+	assert.equal((await fetch('/api/pastes?q=CP000002&page=0')).status, 400);
+	const plan = await (await fetch('/__search-plan')).json();
+	assert.ok(plan.some(row => /SEARCH.*paste_records_public_id.*paste_id>\?.*paste_id<\?/.test(row.detail)), JSON.stringify(plan));
 });
 
 test('out-of-range pages clamp to the last page, without unbounded offsets', async () => {

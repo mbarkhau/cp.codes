@@ -121,6 +121,7 @@ test("browser requires both consents, locks both while busy, and submits both", 
 	const context = vm.createContext({
 		document: { getElementById: getElement }, TextEncoder,
 		window: { location },
+		navigator: { onLine: true },
 		localStorage: { length: 0 }, detectContentType: () => "plaintext",
 		contentTypeForFilename: () => "plaintext",
 		sha256Hex: async () => "hash", gzip: async () => new Uint8Array([1]),

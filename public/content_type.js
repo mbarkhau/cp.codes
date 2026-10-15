@@ -3,11 +3,27 @@ export const CONTENT_TYPE_LABELS = {
 	png: 'PNG image', jpeg: 'JPEG image', webp: 'WebP image', gif: 'GIF image', mp3: 'MP3 audio', mp4: 'MP4 video',
 	javascript: 'JavaScript', typescript: 'TypeScript', python: 'Python', java: 'Java', json: 'JSON', html: 'HTML', css: 'CSS',
 	shell: 'Shell', sql: 'SQL', yaml: 'YAML', xml: 'XML', c: 'C', cpp: 'C++', csharp: 'C#', go: 'Go', rust: 'Rust', ruby: 'Ruby', php: 'PHP',
+	toml: 'TOML', makefile: 'Makefile', kotlin: 'Kotlin', swift: 'Swift', dart: 'Dart', scala: 'Scala',
+	lua: 'Lua', perl: 'Perl', r: 'R', julia: 'Julia', powershell: 'PowerShell',
+	dockerfile: 'Dockerfile', cmake: 'CMake', ini: 'INI', diff: 'Diff',
+	jsonc: 'JSONC', json5: 'JSON5', csv: 'CSV', tsv: 'TSV', scss: 'SCSS', sass: 'Sass', less: 'Less',
+	elixir: 'Elixir', erlang: 'Erlang', haskell: 'Haskell', clojure: 'Clojure', fsharp: 'F#',
+	objectivec: 'Objective-C', groovy: 'Groovy', matlab: 'MATLAB', octave: 'Octave',
 };
 
 /** Resolve a supplied filename by its final extension, without inspecting content. */
-export function contentTypeForFilename(filename) {
+export function contentTypeForFilename(filename, content = '') {
+	if (isSvgContent(content)) return 'xml';
 	const aliases = {
+		svg: 'xml', jsonc: 'jsonc', json5: 'json5', csv: 'csv', tsv: 'tsv', scss: 'scss', sass: 'sass', less: 'less',
+		ex: 'elixir', exs: 'elixir', erl: 'erlang', hrl: 'erlang', hs: 'haskell', lhs: 'haskell',
+		clj: 'clojure', cljs: 'clojure', cljc: 'clojure', edn: 'clojure', fs: 'fsharp', fsx: 'fsharp', fsi: 'fsharp',
+		mm: 'objectivec', objc: 'objectivec', groovy: 'groovy', gradle: 'groovy', m: 'matlab', matlab: 'matlab', octave: 'octave',
+		toml: 'toml', mk: 'makefile', mak: 'makefile', make: 'makefile', makefile: 'makefile',
+		kt: 'kotlin', kts: 'kotlin', swift: 'swift', dart: 'dart', scala: 'scala', sc: 'scala',
+		lua: 'lua', pl: 'perl', pm: 'perl', r: 'r', rscript: 'r', jl: 'julia',
+		ps1: 'powershell', psm1: 'powershell', psd1: 'powershell', dockerfile: 'dockerfile',
+		cmake: 'cmake', ini: 'ini', diff: 'diff', patch: 'diff',
 		txt: "plaintext", text: "plaintext",
 		url: "url",
 		md: "markdown", markdown: "markdown",
@@ -23,15 +39,27 @@ export function contentTypeForFilename(filename) {
 		go: "go", rs: "rust", rb: "ruby", php: "php",
 	};
 	const basename = String(filename).trim().split(/[\\/]/).pop() ?? "";
+	if (/^(?:GNUmakefile|makefile)$/i.test(basename)) return 'makefile';
+	if (/^(?:Dockerfile|Containerfile)(?:\..+)?$/i.test(basename)) return 'dockerfile';
+	if (/^CMakeLists\.txt$/i.test(basename)) return 'cmake';
 	const dot = basename.lastIndexOf(".");
 	if (dot <= 0 || dot === basename.length - 1) return "plaintext";
+	if (basename.slice(dot + 1).toLowerCase() === 'm' && /(?:^\s*#(?:import|include)\b|@(?:interface|implementation|protocol|autoreleasepool)\b)/m.test(content)) return 'objectivec';
 	return aliases[basename.slice(dot + 1).toLowerCase()] ?? "plaintext";
 }
 
 /** Lightweight, synchronous browser-side content detection. */
+export function isSvgContent(content) {
+	const text = content.trim();
+	return /^(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE\s+svg[\s\S]*?>\s*)?<(?:[\w.-]+:)?svg(?=[\s/>]|$)/i.test(text) ||
+		(text.startsWith('<') && !/<(?:html|head|body)\b/i.test(text) && /(?:xmlns(?::[\w.-]+)?\s*=\s*["']http:\/\/www\.w3\.org\/2000\/svg["']|<!DOCTYPE\s+svg\b)/i.test(text));
+}
+
 export function detectContentType(content) {
 	const text = content.trim();
 	if (!text) return "plaintext";
+	// SVG remains source code: recognize root tags, namespace declarations and SVG doctypes.
+	if (isSvgContent(text)) return 'xml';
 
 	if (/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "png";
 	if (/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "jpeg";
@@ -55,6 +83,20 @@ export function detectContentType(content) {
 	} catch {
 		// Not JSON.
 	}
+
+	if (/^```[\s\S]*```$/.test(text)) return "markdown";
+
+	// Build-file syntax must precede broad Markdown heading and YAML key rules.
+	const buildText = text.replace(/^[ \t]*#.*$/gm, '').trim();
+	if (/^(?:FROM|ARG)[ \t]+\S/i.test(buildText) &&
+		/^FROM[ \t]+(?:--[\w-]+=\S+[ \t]+)*\S+/im.test(buildText) &&
+		/^(?:RUN|COPY|ADD|WORKDIR|CMD|ENTRYPOINT|ENV|ARG|EXPOSE|USER|LABEL|VOLUME|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL)[ \t]+\S/im.test(buildText)) return "dockerfile";
+	const makeRule = /^[^\s#:=]+(?:[ \t]+[^\s#:=]+)*[ \t]*:(?!=)[^\r\n]*$/m;
+	const makeAssignment = /^[ \t]*(?:export[ \t]+|override[ \t]+)?[\w.-]+[ \t]*(?::=|::=|\?=|\+=|!=|=)[ \t]*\S/m;
+	const makeDirective = /^\.(?:PHONY|SUFFIXES|DEFAULT_GOAL|SHELLFLAGS|ONESHELL|PRECIOUS|SECONDARY|DELETE_ON_ERROR)[ \t]*(?::|[?:+]?=)/m;
+	if (!/^[ \t]*(?:```|~~~)/m.test(buildText) && makeRule.test(buildText) && (makeDirective.test(buildText) ||
+		/^\t[^\s#]/m.test(buildText) ||
+		(makeAssignment.test(buildText) && /^[ \t]+[^\s#]/m.test(buildText)))) return "makefile";
 
 	if (/^<\?php\b/i.test(text)) return "php";
 	const pythonImport = /^\s*(?:from\s+[\w.]+\s+import\s+.+|import\s+[A-Za-z_]\w*(?:\.\w+)*(?:\s+as\s+\w+)?(?:\s*,\s*[A-Za-z_]\w*(?:\.\w+)*)*)\s*$/m;

@@ -1,5 +1,6 @@
-import { CONTENT_TYPE_LABELS, contentTypeForFilename, detectContentType } from './content_type.js?v=8';
+import { CONTENT_TYPE_LABELS, contentTypeForFilename, detectContentType } from './content_type.js?v=11';
 import { MAX_FILES, MAX_UPLOAD_BYTES } from './policy.js?v=1';
+import { delimitedParser } from './delimited.js?v=1';
 
 const mediaTypes = new Set(['png', 'jpeg', 'webp', 'gif', 'mp3', 'mp4']);
 const languagePackages = {
@@ -19,6 +20,38 @@ const languagePackages = {
 	go: ['@codemirror/lang-go', 'go'],
 	php: ['@codemirror/lang-php', 'php'],
 	markdown: ['@codemirror/lang-markdown', 'markdown'],
+	makefile: ['codemirror-lang-makefile', 'makefile'],
+	toml: ['@codemirror/legacy-modes/mode/toml', 'toml', { stream: true }],
+	ini: ['@codemirror/legacy-modes/mode/properties', 'properties', { stream: true }],
+	kotlin: ['@codemirror/legacy-modes/mode/clike', 'kotlin', { stream: true }],
+	csharp: ['@codemirror/legacy-modes/mode/clike', 'csharp', { stream: true }],
+	scala: ['@codemirror/legacy-modes/mode/clike', 'scala', { stream: true }],
+	dart: ['@codemirror/legacy-modes/mode/clike', 'dart', { stream: true }],
+	shell: ['@codemirror/legacy-modes/mode/shell', 'shell', { stream: true }],
+	ruby: ['@codemirror/legacy-modes/mode/ruby', 'ruby', { stream: true }],
+	swift: ['@codemirror/legacy-modes/mode/swift', 'swift', { stream: true }],
+	lua: ['@codemirror/legacy-modes/mode/lua', 'lua', { stream: true }],
+	perl: ['@codemirror/legacy-modes/mode/perl', 'perl', { stream: true }],
+	r: ['@codemirror/legacy-modes/mode/r', 'r', { stream: true }],
+	julia: ['@codemirror/legacy-modes/mode/julia', 'julia', { stream: true }],
+	powershell: ['@codemirror/legacy-modes/mode/powershell', 'powerShell', { stream: true }],
+	dockerfile: ['@codemirror/legacy-modes/mode/dockerfile', 'dockerFile', { stream: true }],
+	cmake: ['@codemirror/legacy-modes/mode/cmake', 'cmake', { stream: true }],
+	diff: ['@codemirror/legacy-modes/mode/diff', 'diff', { stream: true }],
+	jsonc: ['lezer-json5', 'parser', { json5: true }],
+	json5: ['lezer-json5', 'parser', { json5: true }],
+	scss: ['@codemirror/lang-sass', 'sass'],
+	sass: ['@codemirror/lang-sass', 'sass', { indented: true }],
+	less: ['@codemirror/lang-less', 'less'],
+	elixir: ['codemirror-lang-elixir', 'elixir'],
+	erlang: ['@codemirror/legacy-modes/mode/erlang', 'erlang', { stream: true }],
+	haskell: ['@codemirror/legacy-modes/mode/haskell', 'haskell', { stream: true }],
+	clojure: ['@codemirror/legacy-modes/mode/clojure', 'clojure', { stream: true }],
+	fsharp: ['@codemirror/legacy-modes/mode/mllike', 'fSharp', { stream: true }],
+	objectivec: ['@codemirror/legacy-modes/mode/clike', 'objectiveC', { stream: true }],
+	groovy: ['@codemirror/legacy-modes/mode/groovy', 'groovy', { stream: true }],
+	matlab: ['@codemirror/legacy-modes/mode/octave', 'octave', { stream: true }],
+	octave: ['@codemirror/legacy-modes/mode/octave', 'octave', { stream: true }],
 };
 
 let codeMirrorPromise;
@@ -30,7 +63,7 @@ function loadCodeMirror() {
 		import('@codemirror/language'),
 		import('@codemirror/commands'),
 		import('@lezer/highlight'),
-	]).then(([view, state, language, commands, { tags }]) => ({ ...view, ...state, ...language, ...commands, tags }))
+	]).then(([view, state, language, commands, { tags, styleTags }]) => ({ ...view, ...state, ...language, ...commands, tags, styleTags }))
 		.catch(() => null);
 	return codeMirrorPromise;
 }
@@ -39,35 +72,32 @@ const languageCache = new Map();
 async function languageExtension(type) {
 	const spec = languagePackages[type];
 	const cm = await loadCodeMirror();
+	if (cm && (type === 'csv' || type === 'tsv')) {
+		if (!languageCache.has(type)) languageCache.set(type, cm.StreamLanguage.define(delimitedParser(type === 'tsv' ? '\t' : ',')));
+		return languageCache.get(type);
+	}
 	if (!spec || !cm) return [];
 	try {
-		let extension = languageCache.get(spec[0] + JSON.stringify(spec[2] ?? {}));
+		const key = spec[0] + ':' + spec[1] + JSON.stringify(spec[2] ?? {});
+		let extension = languageCache.get(key);
 		if (!extension) {
 			const module = await import(spec[0]);
-			extension = module[spec[1]](spec[2] ?? {});
-			languageCache.set(spec[0] + JSON.stringify(spec[2] ?? {}), extension);
+			extension = spec[2]?.json5 ? new cm.LanguageSupport(cm.LRLanguage.define({
+				name: 'json5',
+				parser: module.parser.configure({ props: [cm.styleTags({
+					String: cm.tags.string, 'PropertyName!': cm.tags.propertyName, Number: cm.tags.number,
+					'Null': cm.tags.null, 'True False': cm.tags.bool, 'LineComment BlockComment': cm.tags.comment,
+				})] }),
+				languageData: { commentTokens: { line: '//', block: { open: '/*', close: '*/' } } },
+			})) : spec[2]?.stream
+				? cm.StreamLanguage.define({ ...module[spec[1]], name: module[spec[1]].name ?? type })
+				: module[spec[1]](spec[2] ?? {});
+			languageCache.set(key, extension);
 		}
 		return extension;
 	} catch {
 		return [];
 	}
-}
-
-function trashIcon() {
-	const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-	svg.setAttribute('viewBox', '0 0 32 32');
-	svg.setAttribute('width', '24');
-	svg.setAttribute('height', '24');
-	svg.setAttribute('aria-hidden', 'true');
-	const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-	path.setAttribute('d', 'M 13 7 H 19 Z M 8 9 H 24 Z M 9 12 V 14 L 11 25 H 21 L 23 14 V 12');
-	path.setAttribute('fill', 'none');
-	path.setAttribute('stroke', 'currentColor');
-	path.setAttribute('stroke-width', '1.8');
-	path.setAttribute('stroke-linecap', 'butt');
-	path.setAttribute('stroke-linejoin', 'miter');
-	svg.append(path);
-	return svg;
 }
 
 /** Stacked file editors. The first file is always the primary document. */
@@ -79,7 +109,7 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		const detected = detectContentType(file.content);
 		if (mediaTypes.has(detected)) return detected;
 		const name = file.input.value.trim();
-		return name ? contentTypeForFilename(name) : detected;
+		return name ? contentTypeForFilename(name, file.content) : detected;
 	}
 
 	function resolveType(file) {
@@ -103,8 +133,8 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 	}
 
 
-	function updateRemoveButtons() {
-		for (const file of files) file.removeButton.hidden = files.length < 2;
+	function updateFileActions() {
+		for (const [index, file] of files.entries()) file.moveUpButton.hidden = index === 0;
 	}
 
 	function showMedia(file) {
@@ -118,7 +148,7 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		visual.alt = file.input.value || 'Media file';
 		if (kind === 'mp3' || kind === 'mp4') { visual.controls = true; visual.preload = 'none'; }
 		file.mount.append(visual);
-		file.options.hidden = true;
+		file.wrap.hidden = true;
 	}
 
 	function configure(file) {
@@ -177,12 +207,14 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 						cm.syntaxHighlighting(cm.HighlightStyle.define([
 							...cm.defaultHighlightStyle.specs.filter((spec) => !spec.color),
 							{ tag: cm.tags.keyword, color: 'var(--syntax-keyword)' },
-							{ tag: [cm.tags.string, cm.tags.regexp], color: 'var(--syntax-string)' },
+							{ tag: [cm.tags.string, cm.tags.regexp, cm.tags.content], color: 'var(--syntax-string)' },
 							{ tag: [cm.tags.number, cm.tags.bool, cm.tags.null, cm.tags.atom], color: 'var(--syntax-number)' },
 							{ tag: [cm.tags.typeName, cm.tags.className, cm.tags.namespace], color: 'var(--syntax-type)' },
-							{ tag: [cm.tags.function(cm.tags.variableName), cm.tags.definition(cm.tags.variableName)], color: 'var(--syntax-title)' },
+							{ tag: [cm.tags.function(cm.tags.variableName), cm.tags.definition(cm.tags.variableName), cm.tags.labelName], color: 'var(--syntax-title)' },
 							{ tag: [cm.tags.tagName, cm.tags.attributeName, cm.tags.propertyName], color: 'var(--syntax-tag)' },
 							{ tag: [cm.tags.comment, cm.tags.meta], color: 'var(--syntax-comment)' },
+							{ tag: cm.tags.inserted, color: 'var(--syntax-tag)' },
+							{ tag: cm.tags.deleted, color: 'var(--syntax-keyword)' },
 							{ tag: cm.tags.invalid, color: 'var(--danger)' },
 						]), { fallback: true }),
 						cm.keymap.of([{ key: 'Mod-Enter', run: () => { submit(); return true; } }, cm.indentWithTab, ...cm.defaultKeymap, ...cm.historyKeymap]),
@@ -205,6 +237,7 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 							if (!update.docChanged) return;
 							file.content = update.state.doc.toString();
 							syncTypeLabel(file);
+							void applyLanguage(file);
 							notify();
 						}),
 					],
@@ -247,7 +280,32 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		const typeSelect = document.createElement('select');
 		typeSelect.className = 'editor-type';
 		typeSelect.setAttribute('aria-label', 'File type');
-		for (const [value, label] of Object.entries(CONTENT_TYPE_LABELS)) typeSelect.append(new Option(label, value));
+		for (const value of ['auto', 'plaintext', 'markdown', 'url']) {
+			typeSelect.append(new Option(CONTENT_TYPE_LABELS[value], value));
+		}
+		// Explicit display order within each group; future code types fall back to alphabetical order.
+		const configTypes = ['json', 'jsonc', 'json5', 'xml', 'ini', 'yaml', 'toml', 'csv', 'tsv'];
+		const scriptTypes = ['javascript', 'typescript', 'python', 'ruby', 'perl', 'php', 'lua', 'shell', 'powershell', 'dockerfile', 'makefile'];
+		const codeOrder = ['html', 'css', 'scss', 'sass', 'less', 'sql', 'rust', 'c', 'cpp', 'csharp',
+			'fsharp', 'objectivec', 'go', 'java', 'groovy', 'scala', 'kotlin', 'clojure', 'swift', 'dart',
+			'r', 'julia', 'matlab', 'octave', 'cmake', 'erlang', 'elixir', 'haskell', 'diff'];
+		const codeRank = new Map(codeOrder.map((type, index) => [type, index]));
+		const typeGroups = {
+			'Config/Data': configTypes,
+			Script: scriptTypes,
+			Code: Object.keys(CONTENT_TYPE_LABELS)
+				.filter(type => !['auto', 'plaintext', 'markdown', 'url', ...configTypes, ...scriptTypes].includes(type) && !mediaTypes.has(type))
+				.sort((a, b) => (codeRank.get(a) ?? Infinity) - (codeRank.get(b) ?? Infinity) ||
+					CONTENT_TYPE_LABELS[a].localeCompare(CONTENT_TYPE_LABELS[b])),
+			Image: ['jpeg', 'png', 'webp', 'gif'],
+			Media: ['mp4', 'mp3'],
+		};
+		for (const [label, types] of Object.entries(typeGroups)) {
+			const group = document.createElement('optgroup');
+			group.label = label;
+			for (const value of types) group.append(new Option(CONTENT_TYPE_LABELS[value], value));
+			typeSelect.append(group);
+		}
 		typeSelect.value = mediaTypes.has(initial.content_type) ? initial.content_type : 'auto';
 		file.typeSelect = typeSelect;
 		const nameGroup = document.createElement('div');
@@ -255,40 +313,30 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		nameGroup.append(input, typeSelect);
 		const remove = document.createElement('button');
 		remove.type = 'button';
-		remove.className = 'file-button editor-remove';
+		remove.className = 'icon-action danger editor-remove';
 		remove.setAttribute('aria-label', 'Remove file');
-		remove.append(trashIcon());
+		remove.setAttribute('data-icon', 'delete');
+		remove.title = 'Remove file';
 		file.removeButton = remove;
+		const moveUp = document.createElement('button');
+		moveUp.type = 'button';
+		moveUp.className = 'icon-action editor-move-up';
+		moveUp.setAttribute('aria-label', 'Move file up');
+		moveUp.setAttribute('data-icon', 'arrow-up');
+		moveUp.title = 'Move file up';
+		file.moveUpButton = moveUp;
 		const options = document.createElement('div');
 		options.className = 'editor-options';
 		file.options = options;
-		const wrapIcon = (wrapped) => {
-			const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-			svg.setAttribute('viewBox', '0 0 24 24');
-			svg.setAttribute('width', '20');
-			svg.setAttribute('height', '20');
-			svg.setAttribute('aria-hidden', 'true');
-			const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-			path.setAttribute('fill', 'none');
-			path.setAttribute('stroke', 'currentColor');
-			path.setAttribute('stroke-width', '1.8');
-			path.setAttribute('stroke-linecap', 'butt');
-			path.setAttribute('stroke-linejoin', 'miter');
-			path.setAttribute('d', wrapped
-				? 'M4 6h16M4 12h9a4 4 0 0 1 0 8H8m0 0 2.5-2.5M8 20l2.5 2.5'
-				: 'M4 7h16M4 12h16M4 17h16');
-			svg.append(path);
-			return svg;
-		};
 		const modeToggle = (name, modes, initial) => {
 			const button = document.createElement('button');
 			button.type = 'button';
-			button.className = 'file-button editor-toggle';
+			button.className = 'icon-action editor-toggle';
 			let index = Math.max(0, modes.findIndex((mode) => mode.value === initial));
 			const render = () => {
 				const mode = modes[index];
 				button.value = mode.value;
-				button.replaceChildren(mode.icon());
+				button.setAttribute('data-icon', mode.icon);
 				button.title = mode.label;
 				button.setAttribute('aria-label', `${name}: ${mode.label}`);
 			};
@@ -301,12 +349,12 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 			return button;
 		};
 		const wrap = modeToggle('Line wrapping', [
-			{ value: 'soft', label: 'Soft wrap', icon: () => wrapIcon(true) },
-			{ value: 'none', label: 'No wrap', icon: () => wrapIcon(false) },
+			{ value: 'soft', label: 'Soft wrap', icon: 'wrap' },
+			{ value: 'none', label: 'No wrap', icon: 'no-wrap' },
 		], 'soft');
 		file.wrap = wrap;
-		options.append(wrap);
-		toolbar.append(nameGroup, remove, options);
+		options.append(wrap, moveUp, remove);
+		toolbar.append(nameGroup, options);
 		const mount = document.createElement('div');
 		mount.className = 'editor-mount';
 		file.mount = mount;
@@ -314,11 +362,29 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		input.addEventListener('input', () => { syncTypeLabel(file); void applyLanguage(file); notify(); });
 		typeSelect.addEventListener('change', () => { syncTypeLabel(file); void applyLanguage(file); notify(); });
 		remove.addEventListener('click', () => {
-			if (files.length < 2) return;
+			const index = files.indexOf(file);
+			if (index < 0) return;
 			file.editor?.destroy();
 			card.remove();
-			files.splice(files.indexOf(file), 1);
-			updateRemoveButtons();
+			files.splice(index, 1);
+			if (!files.length) {
+				const empty = createFile();
+				files.push(empty);
+				root.append(empty.card);
+				empty.editor.focus();
+			}
+			updateFileActions();
+			notify();
+		});
+		moveUp.addEventListener('click', () => {
+			const index = files.indexOf(file);
+			if (index < 1) return;
+			const predecessor = files[index - 1];
+			files[index - 1] = file;
+			files[index] = predecessor;
+			root.insertBefore(card, predecessor.card);
+			updateFileActions();
+			moveUp.focus();
 			notify();
 		});
 		const initialType = initial.content_type ?? detectContentType(file.content);
@@ -328,13 +394,15 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 		return file;
 	}
 
-	function add(name, text, contentType) {
-		if (files.length === 1 && !files[0].input.value.trim() && !files[0].content) {
-			const file = files[0];
+	function add(name, text, contentType, { reuseEmpty = true } = {}) {
+		const empty = reuseEmpty ? files.find((file) => !file.content) : null;
+		if (name && files.some((file) => file !== empty && file.input.value.trim().toLowerCase() === name.toLowerCase())) throw new Error(`A file named ${name} already exists. Rename it first.`);
+		if (empty) {
+			const file = empty;
 			file.input.value = name;
 			file.content = text;
+			file.typeSelect.value = mediaTypes.has(contentType) ? contentType : 'auto';
 			if (mediaTypes.has(contentType)) {
-				file.typeSelect.value = contentType;
 				showMedia(file);
 			} else file.editor?.set(text);
 			syncTypeLabel(file);
@@ -344,11 +412,10 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 			return;
 		}
 		if (files.length >= MAX_FILES) throw new Error(`A paste can contain up to ${MAX_FILES} files`);
-		if (name && files.some((file) => file.input.value.trim().toLowerCase() === name.toLowerCase())) throw new Error(`A file named ${name} already exists. Rename it first.`);
 		const file = createFile({ name, content: text, content_type: contentType });
 		files.push(file);
 		root.append(file.card);
-		updateRemoveButtons();
+		updateFileActions();
 		notify();
 		file.editor?.focus();
 	}
@@ -381,9 +448,9 @@ export function createFileEditor({ root, changed = () => {}, submit = () => {} }
 	const first = createFile();
 	files.push(first);
 	root.replaceChildren(first.card);
-	updateRemoveButtons();
+	updateFileActions();
 	document.getElementById('add-text')?.addEventListener('click', () => {
-		try { add('', '', 'plaintext'); } catch (error) { notify(error.message); }
+		try { add('', '', 'plaintext', { reuseEmpty: false }); } catch (error) { notify(error.message); }
 	});
 	return {
 		add, prepare, serialized,

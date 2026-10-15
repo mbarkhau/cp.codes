@@ -34,6 +34,7 @@ function browser({ decodeFails = false } = {}) {
 	const filenameEl = { value: "", maxLength: 255 };
 	const context = vm.createContext({
 		atob, Uint8Array, TextDecoder, Image, contentEl, filenameEl,
+		navigator: { onLine: true },
 		MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType,
 		loadMedia: async () => ({ MEDIA_MIME_TYPES, mediaTypeHint, mediaTypeFromBytes, mediaDataUrlType }),
 		document: { getElementById: () => null, createElement: (tag) => tag === "img" ? new Image() : new Element(tag) },

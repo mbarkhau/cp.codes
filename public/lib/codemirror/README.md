@@ -3,14 +3,23 @@
 The package versions and ESM entry points are pinned in
 `scripts/codemirror-packages.json`. `manifest.json` records the local import map,
 npm archive URLs and verified SHA-512 checksums, licenses, and served ESM files.
+Its `precache` list contains the editor core and the complete dependency graph for
+Markdown, JSON, HTML, CSS, JavaScript and Python. `scripts/codemirror-precache.mjs`
+generates this subset; other grammars are downloaded and cached on first use.
 Each package directory retains its upstream license and package metadata. The
 JavaScript files are unmodified copies of the published npm files.
 
 The editor's import map uses root-relative URLs containing each package version.
+URLs encode path segments (including `@` as `%40`) to match Workers Assets'
+canonical paths and avoid redirects. Files on disk keep their original names.
 All imports of a package resolve to one module instance, including the shared
 CodeMirror state/view/language packages. Language extensions continue to load on
 demand. These files receive the same immutable cache policy as other pinned
 vendor assets.
+
+Pins can include a `subpaths` map for individually loaded legacy modes. These
+use `StreamLanguage.define` from the shared language package. Makefile uses the
+community `codemirror-lang-makefile` parser, which provides basic highlighting.
 
 To refresh the vendor files, update the pins and run:
 

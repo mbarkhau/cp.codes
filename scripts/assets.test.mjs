@@ -20,9 +20,69 @@ test('every application JS/CSS asset has one version and all client references a
 		for (const match of source.matchAll(/(['"])((?:\/|\.\/)[^'"\s]+\.(?:js|css)(?:\?[^'"\s]*)?)\1/g)) {
 			const url = new URL(match[2], `https://cp.codes/${file}`);
 			if (url.pathname.startsWith('/lib/')) continue;
+			// The registration URL is stable; the browser must revalidate it for updates.
+			if (file === 'offline.js' && match[2] === '/sw.js') continue;
 			assert.equal(url.pathname + url.search, assetUrl(url.pathname), `${file}: ${match[2]}`);
 		}
 	}
+});
+
+test('offline shell manifest agrees with the asset registry and covers local imports', async () => {
+	const { CACHE_VERSION, SHELL_URL, COMPOSER_URL, ABOUT_URL, EDITOR_MANIFEST_URL, SHELL_ASSETS } = await import('../public/offline_assets.js');
+	assert.equal(CACHE_VERSION, CLIENT_ASSET_VERSIONS['/offline_assets.js']);
+	assert.equal(SHELL_URL, `/app-shell?v=${CACHE_VERSION}`);
+	assert.equal(COMPOSER_URL, `/new-shell?v=${CACHE_VERSION}`);
+	assert.equal(ABOUT_URL, `/about-shell?v=${CACHE_VERSION}`);
+	const cached = new Set(SHELL_ASSETS);
+	assert.ok(cached.has(EDITOR_MANIFEST_URL));
+	assert.ok(cached.has(assetUrl('/app.js')));
+	for (const path of SHELL_ASSETS) {
+		const url = new URL(path, 'https://cp.codes');
+		if (!url.pathname.startsWith('/lib/')) assert.equal(path, assetUrl(url.pathname));
+		if (!url.pathname.endsWith('.js')) continue;
+		const source = await readFile(`public${url.pathname}`, 'utf8');
+		for (const match of source.matchAll(/(?:from\s+|import\s*\(\s*)(['"])((?:\.\/|\/)[^'"\s]+\.(?:js|css)(?:\?[^'"\s]*)?)\1/g)) {
+			const dependency = new URL(match[2], url);
+			assert.ok(cached.has(dependency.pathname + dependency.search), `Offline dependency missing: ${path} -> ${match[2]}`);
+		}
+	}
+});
+
+test('offline about shell is generic and matches the ordinary about page', async () => {
+	const anonymous = await mf.dispatchFetch('https://cp.codes/about-shell?v=1');
+	const staff = await mf.dispatchFetch('https://cp.codes/about-shell?v=1', {
+		headers: { cookie: 'cp_staff_nav=1; cp_staff_session=private-token' },
+	});
+	assert.equal(anonymous.status, 200);
+	assert.equal(anonymous.headers.get('cache-control'), revalidate);
+	assert.equal(anonymous.headers.get('vary'), null);
+	const html = await anonymous.text();
+	assert.equal(await staff.text(), html);
+	assert.equal(await (await mf.dispatchFetch('https://cp.codes/about')).text(), html);
+	assert.ok(html.includes('id="service-providers"'));
+	assert.doesNotMatch(html, /private-token|data-app-shell|data-cp-code|\/admin\//);
+	const head = await mf.dispatchFetch('https://cp.codes/about-shell', { method: 'HEAD' });
+	assert.equal(head.status, 200);
+	assert.equal(await head.text(), '');
+	assert.equal((await mf.dispatchFetch('https://cp.codes/about-shell', { method: 'POST' })).status, 405);
+});
+
+test('offline composer shell is generic and preserves the complete editor markup and import map', async () => {
+	const anonymous = await mf.dispatchFetch('https://cp.codes/new-shell?v=1');
+	const staff = await mf.dispatchFetch('https://cp.codes/new-shell?v=1', {
+		headers: { cookie: 'cp_staff_nav=1; cp_staff_session=private-token' },
+	});
+	assert.equal(anonymous.status, 200);
+	assert.equal(anonymous.headers.get('cache-control'), revalidate);
+	assert.equal(anonymous.headers.get('vary'), null);
+	const html = await anonymous.text();
+	assert.equal(await staff.text(), html);
+	assert.ok(html.includes('id="file-editors"'));
+	assert.ok(html.includes(`src="${assetUrl('/app.js')}"`));
+	assert.ok(html.includes('<script type="importmap">'));
+	assert.doesNotMatch(html, /private-token|data-app-shell|data-cp-code|\/admin\//);
+	assert.equal(await (await mf.dispatchFetch('https://cp.codes/new-shell', { method: 'HEAD' })).text(), '');
+	assert.equal((await mf.dispatchFetch('https://cp.codes/new-shell', { method: 'POST' })).status, 405);
 });
 
 test('current versions and pinned vendors receive a year of immutable caching', () => {
@@ -39,10 +99,29 @@ test('current versions and pinned vendors receive a year of immutable caching', 
 });
 
 test('unversioned, old, duplicate and unknown asset versions revalidate', () => {
-	for (const path of ['/app.js', '/app.js?v=old', `${assetUrl('/app.js')}&v=old`, '/unknown.js?v=1']) {
+	for (const path of ['/sw.js', '/app.js', '/app.js?v=old', `${assetUrl('/app.js')}&v=old`, '/unknown.js?v=1']) {
 		const response = withAssetCachePolicy(new Request(`https://cp.codes${path}`), new Response('asset'));
 		assert.equal(response.headers.get('cache-control'), revalidate, path);
 	}
+});
+
+test('offline entry shell is generic, does not authenticate, and contains no paste or staff data', async () => {
+	const anonymous = await mf.dispatchFetch('https://cp.codes/app-shell?v=1');
+	const staff = await mf.dispatchFetch('https://cp.codes/app-shell?v=1', {
+		headers: { cookie: 'cp_staff_nav=1; cp_staff_session=private-token' },
+	});
+	assert.equal(anonymous.status, 200);
+	assert.equal(anonymous.headers.get('cache-control'), revalidate);
+	const html = await anonymous.text();
+	assert.equal(await staff.text(), html);
+	assert.ok(html.includes('data-app-shell'));
+	assert.ok(html.includes(`src="${assetUrl('/navigation.js')}"`));
+	assert.doesNotMatch(html, /private-token|data-cp-code|\/admin\/|name="action"/);
+	const head = await mf.dispatchFetch('https://cp.codes/app-shell', { method: 'HEAD' });
+	assert.equal(head.status, 200);
+	assert.equal(await head.text(), '');
+	const post = await mf.dispatchFetch('https://cp.codes/app-shell', { method: 'POST' });
+	assert.equal(post.status, 405);
 });
 
 test('development hosts use immutable caching for current versions and pinned libraries', () => {

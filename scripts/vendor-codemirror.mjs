@@ -7,6 +7,7 @@ import { dirname, join, posix, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { editorPrecacheFiles } from './codemirror-precache.mjs';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 const output = join(project, 'public/lib/codemirror');
@@ -24,7 +25,7 @@ async function download(url) {
 }
 
 try {
-	for (const [name, { version, entry }] of Object.entries(pins)) {
+	for (const [name, { version, entry, subpaths = {} }] of Object.entries(pins)) {
 		assert.match(name, /^(?:@[a-z0-9-]+\/)?[a-z0-9.-]+$/);
 		assert.match(version, /^\d+\.\d+\.\d+$/);
 		const metadata = await (await download(`https://registry.npmjs.org/${name}/${version}`)).json();
@@ -43,9 +44,11 @@ try {
 		const entries = execFileSync('tar', ['-tzf', archivePath], { encoding: 'utf8' }).trim().split(/\r?\n/);
 		assert.ok(entries.every(path => path.startsWith('package/') && !path.split('/').includes('..')));
 		execFileSync('tar', ['-xzf', archivePath, '-C', packageDirectory, '--strip-components', '1']);
-		const prefix = `/lib/codemirror/${name}@${version}/`;
+		// Workers Assets canonicalizes each path segment, including every @ sign.
+		const prefix = '/lib/codemirror/' + `${name}@${version}`.split('/').map(encodeURIComponent).join('/') + '/';
 		const destination = join(output, `${name}@${version}`);
 		imports[name] = prefix + entry;
+		for (const [subpath, file] of Object.entries(subpaths)) imports[`${name}/${subpath}`] = prefix + file;
 		const visited = new Set();
 		async function copyModule(relative) {
 			if (visited.has(relative)) return;
@@ -69,6 +72,7 @@ try {
 			files.push(prefix + relative.replaceAll('\\', '/'));
 		}
 		await copyModule(entry);
+		for (const file of Object.values(subpaths)) await copyModule(file);
 		const license = (await readdir(packageDirectory)).find(path => /^license(?:[.-]|$)/i.test(path));
 		assert.ok(license, `License missing: ${name}`);
 		await writeFile(join(destination, license), await readFile(join(packageDirectory, license)));
@@ -76,7 +80,8 @@ try {
 		sources[name] = { version, entry, integrity, tarball: metadata.dist.tarball, license: prefix + license };
 		console.log(`Vendored ${name}@${version} (${visited.size} ESM file${visited.size === 1 ? '' : 's'})`);
 	}
-	await writeFile(join(output, 'manifest.json'), JSON.stringify({ imports, sources, files: files.sort() }, null, 2) + '\n');
+	const precache = await editorPrecacheFiles(imports);
+	await writeFile(join(output, 'manifest.json'), JSON.stringify({ imports, sources, files: files.sort(), precache }, null, 2) + '\n');
 } finally {
 	// Remove only this command's mkdtemp directory inside the system temp root.
 	const resolved = await realpath(temporary);

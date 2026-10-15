@@ -3,8 +3,8 @@
  * The nonce search is split across a Web Worker pool. Each worker uses native
  * Web Crypto when available and lazily loads hash-wasm as a fallback.
  */
-import { contentTypeForFilename, detectContentType } from "./content_type.js?v=8";
-import { createFileEditor } from './files.js?v=34';
+import { contentTypeForFilename, detectContentType } from "./content_type.js?v=11";
+import { createFileEditor } from './files.js?v=49';
 import { MAX_UPLOAD_BYTES } from './policy.js?v=1';
 
 const contentEl = document.getElementById("content");
@@ -66,7 +66,7 @@ function currentDraft() {
 
 function updateDetection() {
 	const draft = currentDraft();
-	const automaticType = draft.name ? contentTypeForFilename(draft.name) : detectContentType(draft.content ?? '');
+	const automaticType = draft.name ? contentTypeForFilename(draft.name, draft.content) : detectContentType(draft.content ?? '');
 	const type = draft.content_type ?? (contentTypeEl?.value && contentTypeEl.value !== 'auto' ? contentTypeEl.value : automaticType);
 	return type;
 }
@@ -160,7 +160,7 @@ async function loadFile(file) {
 	}
 
 	if (typeof addLoadedFile === 'function' && fileEditor) {
-		try { addLoadedFile(file.name, text, actualMediaType ?? contentTypeForFilename(file.name)); }
+		try { addLoadedFile(file.name, text, actualMediaType ?? contentTypeForFilename(file.name, text)); }
 		catch (error) { setStatus(error.message, 'err'); return; }
 	} else {
 		contentEl.value = text;
@@ -306,6 +306,10 @@ function scheduleProofEstimate(byteLength) {
 
 async function refreshProofEstimate(byteLength) {
 	const serial = ++proofEstimateSerial;
+	if (navigator.onLine === false) {
+		proofEstimateEl.textContent = 'PoW estimate available online';
+		return;
+	}
 	try {
 		const response = await fetch(`/api/pow?byte_length=${byteLength}`);
 		if (!response.ok) throw new Error('difficulty unavailable');
@@ -474,6 +478,10 @@ async function solvePow(challenge) {
 function loadMedia() { return import('./media.js?v=1'); }
 
 async function publish() {
+	if (navigator.onLine === false) {
+		setStatus('Connect to publish this paste.', 'err');
+		return;
+	}
 	if (isBusy || !consentEl.checked || !moderationConsentEl.checked) return;
 	const unlisted = !listedEl.checked;
 	let bundle = null;

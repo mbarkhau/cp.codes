@@ -41,11 +41,98 @@ well, continuing through its importers. Server-generated URLs and preloads use
 `assetUrl()` to read the registry. `scripts/assets.test.mjs` checks that every
 application JS/CSS file is registered, client references agree with the registry,
 and both Worker asset routes apply the cache policy. No client build step is needed.
+For shell dependencies, also update `public/offline_assets.js`, bump its version
+and `CACHE_VERSION` together, update `SHELL_URL`, and bump its importer `sw.js`.
+The worker registration URL stays `/sw.js` so browsers check for updates.
 
-The shared `public/style.css` and `public/site.js` files are imported as text by
-`src/ui.ts` during Worker bundling and embedded in each HTML response. Edit those
-public files directly; their contents are not duplicated in the template. The CSS
-is in the head, and the script initializes the parsed shell before page modules.
+Public archive and paste pages enhance ordinary links with client-side navigation.
+Opening a paste starts its JSON metadata and gzip content requests concurrently;
+the browser keeps the current shell and renders the verified body in place.
+`public/pages.js` shares archive/view markup with the Worker, and `public/view.js`
+mounts each viewer with its own state and cleanup. Back navigation can restore an
+in-memory archive snapshot; repeated bodies use the endpoint's existing private
+HTTP cache or a verified saved copy. Other pages use normal navigation. Approved
+URL pastes redirect online to their verified HTTP(S) destination.
+
+After a public visit, a service worker installs generic viewer, composer and about shells
+and their versioned dependencies, including CodeMirror support for Markdown, JSON,
+HTML, CSS, JavaScript and Python. Other editor languages download when detected or
+selected and are cached for subsequent offline use.
+Once installation finishes, direct links, refreshes and new tabs for `/`, `/new`,
+`/index.html`, `/about`, `/pastes` and canonical paste IDs load their shell locally. The
+worker leaves APIs, staff pages, login/logout, mutations, and raw/file downloads
+on the network. Complete updates activate immediately and reload open public
+about/archive/paste pages from the new local shell, including pages running older client
+code. Other pages keep their current document so editor drafts are preserved.
+The previous shell's assets remain available during the switch; older generations
+are removed on subsequent updates when no other pages need them. Failed installs
+leave the previous version available.
+
+IndexedDB saves public archive pages and successfully verified, human-approved
+paste copies, including unlisted approved pastes. Limited-sharing and staff-only
+copies and URL redirects are excluded. Stored bodies remain compressed and are
+verified again before display. The cache holds at most 32 MiB and 40 entries;
+copies expire after 30 days. Browser eviction, quota failures, storage denial,
+corrupt copies and old schemas are handled as cache misses.
+
+Saved copies display without a blocking network request. Online visits refresh
+metadata in the background; a 404/423 removes the saved body and replaces its display.
+Previously downloaded data can remain visible until that check completes, and
+cannot be remotely revoked while offline. New pastes still need the two concurrent
+API calls; an unseen paste cannot load without a connection. The composer supports
+offline editing, language selection and local file/media uploads; drafts stay in
+the open editor tab. Publishing, staff actions, reports and raw downloads remain
+online. External Markdown resources
+and optional syntax-highlighting grammars are not precached.
+
+The editor highlights 50 language modes, including TOML, Makefile, Kotlin, YAML,
+Shell, C#, Ruby, Swift, Dart, Scala, Lua, Perl, R, Julia, PowerShell, Dockerfile,
+CMake, INI and Diff. Editor grammars are vendored; the six default languages are
+available offline immediately, and other grammars are available after first use. The
+paste viewer loads only requested Highlight.js grammars; TOML uses its INI
+grammar. Filename detection recognizes `Makefile`, `GNUmakefile`, `Dockerfile`,
+`Containerfile`, `CMakeLists.txt` and the supported extensions. Unnamed pastes
+can use the language selector. Makefile's editor parser provides basic highlighting.
+
+JSONC/JSON5, CSV/TSV, SCSS/Sass/Less, Elixir, Erlang, Haskell, Clojure, F#,
+Objective-C, Groovy, MATLAB and Octave are also selectable. CSV/TSV use column
+colors and preserve quoted delimiters, escaped quotes and multiline fields.
+JSONC shares the permissive JSON5 highlighting parser; highlighting does not
+validate JSONC syntax. SVG filenames, root tags and SVG namespace declarations
+select XML highlighting. `.m` files default to MATLAB, with recognizable
+Objective-C declarations or imports selecting Objective-C instead. Explicit
+language selections override automatic detection.
+
+`GET /api/pastes?page=1` returns the same 50-row paginated archive as `/pastes`;
+the existing `GET /api/pastes?limit=40` recent feed retains its response format.
+The public archive supports case-insensitive paste ID prefix search with `q`, for
+example `/pastes?q=CP00` or `/api/pastes?q=CP00&page=1`. Search uses an ID index
+and includes only listed, human-approved, visible pastes. Full IDs also work;
+filenames and paste contents are not searched.
+The archive filters automatically 500 milliseconds after the last edit to the
+search field; submitting the form searches immediately.
+The archive initially focuses its first paste. `j` moves down and `k` moves up
+without wrapping, `/` focuses search, Enter in search focuses the first result
+(applying a pending query immediately), and Enter on a paste opens it.
+Paste metadata also includes the public upload proof, raw URL, display type,
+and report-dialog configuration needed by the client viewer.
+Run `npm run test:navigation:browser` with the Playwright setup used by the other
+browser tests to verify concurrent loading, history, viewer cleanup, cache limits,
+moderation eviction, offline direct entry, all editor language modes and media
+previews offline, and loading with the HTTP server stopped.
+`npm run test:offline-update:browser` also verifies normal refresh upgrades an older
+worker with existing tabs open, preserves editor drafts, survives a failed update,
+and loads the updated shell offline.
+To try this locally, visit a human-approved paste, let the shell install, then open
+its URL in a new tab with the server stopped or DevTools Network set to Offline.
+DevTools may still list the document request, but it should be served by the service
+worker. Online metadata checks and browser service-worker update checks still make
+background requests; they do not block the saved content.
+
+The shared `public/style.css` and `public/site.js` files are referenced by
+`src/ui.ts` with versioned asset URLs. Edit those public files directly; their
+contents are not duplicated in the template. The CSS link is in the head, and
+the script initializes the parsed shell before page modules.
 
 Staff navigation is rendered by `site.js` from a readable, eight-hour cookie hint
 set after login and cleared on logout or a rejected staff session. It contains only
@@ -348,7 +435,7 @@ are logged without failing a served response; pending reservations can be lost i
 the Durable Object restarts before persistence finishes.
 
 A successful `GET` increments a paste's hit count only when it loads the content:
-raw responses count in the background, while an HTML view counts when its browser fetches
+raw responses count in the background, while a browser view counts when it fetches
 the content endpoint. An approved URL paste instead returns `302 Found` from its
 canonical CP-Code path and increments the hit count with that redirect. Access-log
 entries record their timestamp, IP address, Cloudflare location fields, HTTP
@@ -361,8 +448,11 @@ metadata and a loading shell but no paste body. Browser JavaScript fetches the g
 object, decompresses it, verifies its uncompressed length and SHA-256 hash, and then
 renders plaintext/code, Markdown, PNG/JPEG/WebP/GIF images, MP3/MP4 players, or the URL warning for a URL
 that has not been approved. The viewer switches bundle files locally after a single
-verified download. Multiple files appear as tabs above the content; the selected
-filename stays readable while other tabs share the remaining width. Copied links
+verified download. Every paste has file tabs above its content, including single-file
+pastes; filenames are left aligned and shown there instead of in the metadata row.
+A lone tab starts at the greater of 25% of the card or 50em and grows as its filename
+needs, capped at the card's width. The loading skeleton reserves the same tab row. In bundles, the
+selected filename stays readable while other tabs share the remaining width. Copied links
 include a `#file-<URL-encoded filename>` fragment to reopen the selected file.
 Copying an image writes PNG image data to the clipboard, not its base64 text;
 JPEG/WebP/GIF images are converted at their original resolution. GIF animation is
@@ -370,7 +460,9 @@ not copied. Image copying requires browser support and clipboard permission;
 otherwise save the displayed image instead. Text copying is unchanged.
 The viewer fetches content using the endpoint's HTTP cache policy and removes
 legacy JavaScript content-cache entries while retaining cached QR images.
-Downloaded content can remain in client caches. JSON metadata exposes `content_url`,
+Downloaded content can remain in client caches. Saved local views do not increment
+server hit counts or send an HTML access-log entry; their online metadata checks
+still produce JSON access-log entries. JSON metadata exposes `content_url`,
 `content_encoding`, and both compressed and
 uncompressed lengths instead of embedding the plaintext content.
 

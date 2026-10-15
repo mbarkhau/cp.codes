@@ -84,6 +84,34 @@ test('HEAD does not schedule tracking and failed tracking does not fail a served
 	await Promise.all(failed.pending);
 });
 
+test('public metadata includes viewer configuration and proof without private upload fields', async () => {
+	const { env, ctx, pending } = fixture(async () => {});
+	const response = await worker.fetch(new Request(`https://cp.codes/api/paste/${id}`), env, ctx);
+	const data = await response.json();
+	assert.equal(data.raw_url, `/${id}.txt`);
+	assert.equal(data.type_label, 'Plaintext');
+	assert.equal(data.staff_review, false);
+	assert.equal(data.offline_cacheable, true);
+	assert.equal(data.proof_of_work, null);
+	assert.ok(data.report_categories.includes('other illegal content'));
+	assert.ok(data.max_report_email_chars > 0);
+	assert.equal(data.upload_metadata, undefined);
+	assert.doesNotMatch(JSON.stringify(data), /192\.0\.2\.1|cf-connecting-ip/);
+	await Promise.all(pending);
+});
+
+test('limited public metadata and HTML do not permit offline snapshots', async () => {
+	const { env, ctx, pending } = fixture(async () => {}, {
+		getReadState: async () => ({ moderation: { ...moderation, decision: 'unreviewed' }, hit_count: 7 }),
+		authorizeAccess: async () => ({ allowed: true, state: 'limited' }),
+	});
+	const response = await worker.fetch(new Request(`https://cp.codes/api/paste/${id}`), env, ctx);
+	assert.equal((await response.json()).offline_cacheable, false);
+	const html = await worker.fetch(new Request(`https://cp.codes/${id}`, { headers: { accept: 'text/html' } }), env, ctx);
+	assert.ok((await html.text()).includes('data-offline-cacheable="false"'));
+	await Promise.all(pending);
+});
+
 function reservedIndex() {
 	const index = Object.create(PasteIndex.prototype);
 	index.pendingSharing = new Map();

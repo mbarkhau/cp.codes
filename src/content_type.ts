@@ -26,6 +26,10 @@ export const CONTENT_TYPES = [
 	"rust",
 	"ruby",
 	"php",
+	"toml", "makefile", "kotlin", "swift", "dart", "scala", "lua", "perl", "r", "julia",
+	"powershell", "dockerfile", "cmake", "ini", "diff",
+	"jsonc", "json5", "csv", "tsv", "scss", "sass", "less", "elixir", "erlang", "haskell",
+	"clojure", "fsharp", "objectivec", "groovy", "matlab", "octave",
 ] as const;
 
 export type ContentType = (typeof CONTENT_TYPES)[number];
@@ -60,6 +64,37 @@ export const CONTENT_TYPE_FILES: Record<ContentType, { extension: string; mediaT
 	rust: { extension: "rs", mediaType: "text/x-rust" },
 	ruby: { extension: "rb", mediaType: "text/x-ruby" },
 	php: { extension: "php", mediaType: "text/x-php" },
+	toml: { extension: "toml", mediaType: "application/toml" },
+	makefile: { extension: "mk", mediaType: "text/x-makefile" },
+	kotlin: { extension: "kt", mediaType: "text/x-kotlin" },
+	swift: { extension: "swift", mediaType: "text/x-swift" },
+	dart: { extension: "dart", mediaType: "text/x-dart" },
+	scala: { extension: "scala", mediaType: "text/x-scala" },
+	lua: { extension: "lua", mediaType: "text/x-lua" },
+	perl: { extension: "pl", mediaType: "text/x-perl" },
+	r: { extension: "r", mediaType: "text/x-r-source" },
+	julia: { extension: "jl", mediaType: "text/x-julia" },
+	powershell: { extension: "ps1", mediaType: "text/x-powershell" },
+	dockerfile: { extension: "dockerfile", mediaType: "text/plain" },
+	cmake: { extension: "cmake", mediaType: "text/x-cmake" },
+	ini: { extension: "ini", mediaType: "text/plain" },
+	diff: { extension: "diff", mediaType: "text/x-diff" },
+	jsonc: { extension: "jsonc", mediaType: "text/plain" },
+	json5: { extension: "json5", mediaType: "text/plain" },
+	csv: { extension: "csv", mediaType: "text/csv" },
+	tsv: { extension: "tsv", mediaType: "text/tab-separated-values" },
+	scss: { extension: "scss", mediaType: "text/x-scss" },
+	sass: { extension: "sass", mediaType: "text/x-sass" },
+	less: { extension: "less", mediaType: "text/x-less" },
+	elixir: { extension: "ex", mediaType: "text/x-elixir" },
+	erlang: { extension: "erl", mediaType: "text/x-erlang" },
+	haskell: { extension: "hs", mediaType: "text/x-haskell" },
+	clojure: { extension: "clj", mediaType: "text/x-clojure" },
+	fsharp: { extension: "fs", mediaType: "text/x-fsharp" },
+	objectivec: { extension: "mm", mediaType: "text/x-objectivec" },
+	groovy: { extension: "groovy", mediaType: "text/x-groovy" },
+	matlab: { extension: "m", mediaType: "text/x-matlab" },
+	octave: { extension: "octave", mediaType: "text/x-octave" },
 };
 
 export function fileExtension(type: ContentType): string {
@@ -72,6 +107,10 @@ export function rawContentType(type: ContentType): string {
 }
 
 const CONTENT_TYPE_EXTENSION_ALIASES: Readonly<Record<string, ContentType>> = {
+	svg: "xml", exs: "elixir", hrl: "erlang", lhs: "haskell", cljs: "clojure", cljc: "clojure", edn: "clojure",
+	fsx: "fsharp", fsi: "fsharp", objc: "objectivec", gradle: "groovy", matlab: "matlab",
+	mak: "makefile", make: "makefile", makefile: "makefile", kts: "kotlin",
+	sc: "scala", pm: "perl", rscript: "r", psm1: "powershell", psd1: "powershell", patch: "diff",
 	text: "plaintext",
 	markdown: "markdown",
 	jpeg: "jpeg",
@@ -104,10 +143,15 @@ export function contentTypeForExtension(extension: string): ContentType | null {
 }
 
 /** Resolve a supplied filename by its final extension, without inspecting content. */
-export function contentTypeForFilename(filename: string): ContentType {
+export function contentTypeForFilename(filename: string, content = ""): ContentType {
+	if (isSvgContent(content)) return "xml";
 	const basename = filename.trim().split(/[\\/]/).pop() ?? "";
+	if (/^(?:GNUmakefile|makefile)$/i.test(basename)) return "makefile";
+	if (/^(?:Dockerfile|Containerfile)(?:\..+)?$/i.test(basename)) return "dockerfile";
+	if (/^CMakeLists\.txt$/i.test(basename)) return "cmake";
 	const dot = basename.lastIndexOf(".");
 	if (dot <= 0 || dot === basename.length - 1) return "plaintext";
+	if (basename.slice(dot + 1).toLowerCase() === "m" && /(?:^\s*#(?:import|include)\b|@(?:interface|implementation|protocol|autoreleasepool)\b)/m.test(content)) return "objectivec";
 	return contentTypeForExtension(basename.slice(dot + 1)) ?? "plaintext";
 }
 
@@ -140,6 +184,12 @@ export const CONTENT_TYPE_LABELS: Record<ContentTypeChoice, string> = {
 	rust: "Rust",
 	ruby: "Ruby",
 	php: "PHP",
+	toml: "TOML", makefile: "Makefile", kotlin: "Kotlin", swift: "Swift", dart: "Dart", scala: "Scala",
+	lua: "Lua", perl: "Perl", r: "R", julia: "Julia", powershell: "PowerShell",
+	dockerfile: "Dockerfile", cmake: "CMake", ini: "INI", diff: "Diff",
+	jsonc: "JSONC", json5: "JSON5", csv: "CSV", tsv: "TSV", scss: "SCSS", sass: "Sass", less: "Less",
+	elixir: "Elixir", erlang: "Erlang", haskell: "Haskell", clojure: "Clojure", fsharp: "F#",
+	objectivec: "Objective-C", groovy: "Groovy", matlab: "MATLAB", octave: "Octave",
 };
 
 const CONTENT_TYPE_SET = new Set<string>(CONTENT_TYPES);
@@ -168,6 +218,12 @@ function matches(content: string, patterns: RegExp[]): number {
 	return patterns.reduce((score, pattern) => score + (pattern.test(content) ? 1 : 0), 0);
 }
 
+export function isSvgContent(content: string): boolean {
+	const text = content.trim();
+	return /^(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE\s+svg[\s\S]*?>\s*)?<(?:[\w.-]+:)?svg(?=[\s/>]|$)/i.test(text) ||
+		(text.startsWith('<') && !/<(?:html|head|body)\b/i.test(text) && /(?:xmlns(?::[\w.-]+)?\s*=\s*["']http:\/\/www\.w3\.org\/2000\/svg["']|<!DOCTYPE\s+svg\b)/i.test(text));
+}
+
 /**
  * Conservative text/language detection. Ambiguous input intentionally remains
  * plaintext; callers can always supply an explicit content type.
@@ -182,6 +238,8 @@ export function detectContentType(content: string): ContentType {
 	if (/^data:video\/mp4;base64,[A-Za-z0-9+/]+={0,2}$/.test(text)) return "mp4";
 	if (parseHttpUrl(text)) return "url";
 	if (!text) return "plaintext";
+	// SVG remains source code: recognize root tags, namespace declarations and SVG doctypes.
+	if (isSvgContent(text)) return "xml";
 
 	try {
 		const parsed: unknown = JSON.parse(text);
@@ -189,6 +247,20 @@ export function detectContentType(content: string): ContentType {
 	} catch {
 		// Not JSON.
 	}
+
+	if (/^```[\s\S]*```$/.test(text)) return "markdown";
+
+	// Build-file syntax must precede broad Markdown heading and YAML key rules.
+	const buildText = text.replace(/^[ \t]*#.*$/gm, '').trim();
+	if (/^(?:FROM|ARG)[ \t]+\S/i.test(buildText) &&
+		/^FROM[ \t]+(?:--[\w-]+=\S+[ \t]+)*\S+/im.test(buildText) &&
+		/^(?:RUN|COPY|ADD|WORKDIR|CMD|ENTRYPOINT|ENV|ARG|EXPOSE|USER|LABEL|VOLUME|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL)[ \t]+\S/im.test(buildText)) return "dockerfile";
+	const makeRule = /^[^\s#:=]+(?:[ \t]+[^\s#:=]+)*[ \t]*:(?!=)[^\r\n]*$/m;
+	const makeAssignment = /^[ \t]*(?:export[ \t]+|override[ \t]+)?[\w.-]+[ \t]*(?::=|::=|\?=|\+=|!=|=)[ \t]*\S/m;
+	const makeDirective = /^\.(?:PHONY|SUFFIXES|DEFAULT_GOAL|SHELLFLAGS|ONESHELL|PRECIOUS|SECONDARY|DELETE_ON_ERROR)[ \t]*(?::|[?:+]?=)/m;
+	if (!/^[ \t]*(?:```|~~~)/m.test(buildText) && makeRule.test(buildText) && (makeDirective.test(buildText) ||
+		/^\t[^\s#]/m.test(buildText) ||
+		(makeAssignment.test(buildText) && /^[ \t]+[^\s#]/m.test(buildText)))) return "makefile";
 
 	if (/^<\?php\b/i.test(text)) return "php";
 	if (/^#!.*\b(?:python\d*|python)\b/m.test(text)) return "python";

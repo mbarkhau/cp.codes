@@ -11,6 +11,7 @@ import { isContentType, type ContentType } from "./content_type";
 import { initialModeration, MODEL, PROMPT_VERSION, type JevAssessment } from "./jev.mjs";
 import { BASE_BYTES, sizeDifficultyBits, SHARING_LIMITS } from '../public/policy.js';
 import type { FileManifest } from './bundle';
+import { ALPHABET, ID_PREFIX, ID_LENGTH } from './cp_code';
 
 /** Paste bytes covered by the base proof-of-work difficulty. */
 export const DEFAULT_PASTE_BYTES = BASE_BYTES;
@@ -267,10 +268,17 @@ export type PublicPastePage = {
 	page_size: number;
 	total: number;
 	total_pages: number;
+	q?: string;
 };
 
-export async function listPublicPastesPage(env: Env, page = 1): Promise<PublicPastePage> {
-	return pasteIndexStub(env).listPublicPage(page);
+/** Search complete IDs or prefixes, using the same alphabet as the ID codec. */
+export function normalizePasteIdSearch(query: string): string | null {
+	const q = query.trim().toUpperCase();
+	return !q || new RegExp(`^${ID_PREFIX}[${ALPHABET}]{0,${ID_LENGTH - ID_PREFIX.length}}$`).test(q) ? q : null;
+}
+
+export async function listPublicPastesPage(env: Env, page = 1, q = ''): Promise<PublicPastePage> {
+	return pasteIndexStub(env).listPublicPage(page, q);
 }
 
 export function pasteObjectKey(id: string): string {
@@ -688,6 +696,7 @@ export class PasteIndex extends DurableObject<Env> {
 			}
 		}
 		this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS paste_records_public_order ON paste_records(listed, json_extract(metadata_json, '$.created_at') DESC, paste_id DESC)");
+		this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS paste_records_public_id ON paste_records(listed, paste_id)');
 		this.ctx.storage.sql.exec(
 			"CREATE INDEX IF NOT EXISTS paste_records_content_type ON paste_records(json_extract(metadata_json, '$.content_type'))",
 		);
@@ -987,13 +996,18 @@ export class PasteIndex extends DurableObject<Env> {
 	}
 
 	/** Full public archive, independent of the bounded legacy recent-feed cache. */
-	listPublicPage(requestedPage = 1): PublicPastePage {
+	listPublicPage(requestedPage = 1, query = ''): PublicPastePage {
 		if (!Number.isSafeInteger(requestedPage) || requestedPage < 1) throw new Error('invalid public paste page');
-		const joins = `FROM paste_records p
+		const q = normalizePasteIdSearch(query);
+		if (q === null) throw new Error('invalid paste ID search');
+		// An explicit B-tree range avoids LIKE scans and JSON extraction for unrelated IDs.
+		const bindings = q ? [q, q + '\uffff'] : [];
+		const joins = `FROM paste_records p${q ? ' INDEXED BY paste_records_public_id' : ''}
 			JOIN paste_moderation_state s ON s.paste_id = p.paste_id
 			WHERE p.listed = 1 AND s.decision = 'approved' AND s.visibility = 'visible'
-			AND COALESCE(json_extract(p.metadata_json, '$.unlisted'), 0) = 0`;
-		const total = this.ctx.storage.sql.exec<{ total: number }>(`SELECT COUNT(*) AS total ${joins}`).one().total;
+			AND COALESCE(json_extract(p.metadata_json, '$.unlisted'), 0) = 0
+			${q ? 'AND p.paste_id >= ? AND p.paste_id < ?' : ''}`;
+		const total = this.ctx.storage.sql.exec<{ total: number }>(`SELECT COUNT(*) AS total ${joins}`, ...bindings).one().total;
 		const totalPages = Math.max(1, Math.ceil(total / PUBLIC_PASTES_PAGE_SIZE));
 		const page = Math.min(requestedPage, totalPages);
 		const rows = this.ctx.storage.sql.exec<{ paste_id: string; metadata_json: string; preview: string; hit_count: number }>(`
@@ -1002,7 +1016,7 @@ export class PasteIndex extends DurableObject<Env> {
 			${joins}
 			ORDER BY json_extract(p.metadata_json, '$.created_at') DESC, p.paste_id DESC
 			LIMIT ? OFFSET ?
-		`, PUBLIC_PASTES_PAGE_SIZE, (page - 1) * PUBLIC_PASTES_PAGE_SIZE).toArray();
+		`, ...bindings, PUBLIC_PASTES_PAGE_SIZE, (page - 1) * PUBLIC_PASTES_PAGE_SIZE).toArray();
 		return {
 			items: rows.map(row => {
 				const metadata = storedPasteFromJson(row.metadata_json, row.paste_id);
@@ -1014,6 +1028,7 @@ export class PasteIndex extends DurableObject<Env> {
 				};
 			}),
 			page, page_size: PUBLIC_PASTES_PAGE_SIZE, total, total_pages: totalPages,
+			...(q ? { q } : {}),
 		};
 	}
 

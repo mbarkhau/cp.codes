@@ -1,4 +1,5 @@
 /** Optional paste highlighting: fetch only the core and explicitly requested grammars. */
+import { highlightDelimited } from './delimited.js?v=1';
 const HIGHLIGHT_CDN = "https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/lib";
 // Regex-based grammars can be expensive on large/untrusted inputs.
 const MAX_HIGHLIGHT_CHARS = 200_000;
@@ -13,6 +14,21 @@ const LANGUAGE_ALIASES = new Map([
 	["csharp", "csharp"], ["cs", "csharp"], ["c#", "csharp"],
 	["go", "go"], ["golang", "go"], ["rust", "rust"], ["rs", "rust"],
 	["ruby", "ruby"], ["rb", "ruby"], ["php", "php"],
+	["toml", "ini"], ["ini", "ini"],
+	["makefile", "makefile"], ["make", "makefile"], ["mk", "makefile"], ["mak", "makefile"],
+	["kotlin", "kotlin"], ["kt", "kotlin"], ["kts", "kotlin"],
+	["swift", "swift"], ["dart", "dart"], ["scala", "scala"],
+	["lua", "lua"], ["perl", "perl"], ["pl", "perl"], ["r", "r"], ["julia", "julia"], ["jl", "julia"],
+	["powershell", "powershell"], ["ps1", "powershell"], ["ps", "powershell"],
+	["dockerfile", "dockerfile"], ["docker", "dockerfile"], ["cmake", "cmake"],
+	["diff", "diff"], ["patch", "diff"],
+	["svg", "xml"], ["jsonc", "json"], ["json5", "json5"], ["csv", "csv"], ["tsv", "tsv"],
+	["scss", "scss"], ["sass", "scss"], ["less", "less"],
+	["elixir", "elixir"], ["ex", "elixir"], ["exs", "elixir"], ["erlang", "erlang"], ["erl", "erlang"],
+	["haskell", "haskell"], ["hs", "haskell"], ["clojure", "clojure"], ["clj", "clojure"],
+	["fsharp", "fsharp"], ["f#", "fsharp"], ["fs", "fsharp"],
+	["objectivec", "objectivec"], ["objc", "objectivec"], ["objective-c", "objectivec"],
+	["groovy", "groovy"], ["matlab", "matlab"], ["octave", "matlab"],
 ]);
 
 let corePromise;
@@ -22,6 +38,16 @@ function loadLanguage(language) {
 	if (!corePromise) corePromise = import(`${HIGHLIGHT_CDN}/core/+esm`).then(({ default: hljs }) => hljs);
 	if (!languagePromises.has(language)) {
 		languagePromises.set(language, corePromise.then(async (hljs) => {
+			if (language === 'json5') {
+				hljs.registerLanguage(language, hljs => ({
+					name: 'JSON5', contains: [hljs.C_LINE_COMMENT_MODE, hljs.C_BLOCK_COMMENT_MODE,
+						{ scope: 'attr', begin: /(?:[A-Za-z_$][\w$]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')(?=\s*:)/ },
+						hljs.QUOTE_STRING_MODE, hljs.APOS_STRING_MODE,
+						{ scope: 'number', begin: /[+-]?(?:Infinity|NaN|0[xX][\da-fA-F]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/ },
+						{ scope: 'literal', begin: /\b(?:true|false|null)\b/ }],
+				}));
+				return hljs;
+			}
 			const { default: grammar } = await import(`${HIGHLIGHT_CDN}/languages/${language}/+esm`);
 			hljs.registerLanguage(language, grammar);
 			return hljs;
@@ -52,6 +78,11 @@ export async function highlightPaste(root) {
 
 	await Promise.all(candidates.map(async ({ code, language, content }) => {
 		try {
+			if (language === 'csv' || language === 'tsv') {
+				code.innerHTML = highlightDelimited(content, language === 'tsv' ? '\t' : ',');
+				code.classList.add('hljs');
+				return;
+			}
 			const hljs = await loadLanguage(language);
 			if (!hljs.getLanguage(language)) return;
 			// Highlight.js escapes the source; never interpret paste HTML directly.

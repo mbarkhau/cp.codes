@@ -89,6 +89,7 @@ for (const [index, reason] of ["spam", "CSAM", "malware or phishing"].entries())
 					assert.ok(html.includes(`data-content-url="/admin/paste/${id}/content"`));
 					assert.ok(html.includes(`data-raw-url="/admin/paste/${id}/raw"`));
 					assert.ok(html.includes('data-staff-review="true"'));
+					assert.ok(html.includes('data-offline-cacheable="false"'));
 					assert.ok(!html.includes(content));
 				} else if (suffix === "raw") {
 					assert.equal(await response.text(), content);

@@ -73,7 +73,7 @@ function initTheme() {
 		toggle.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
 	}
 
-	let theme = 'light';
+	let theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 	try {
 		const saved = localStorage.getItem(STORAGE_KEY);
 		if (saved === 'light' || saved === 'dark') theme = saved;
@@ -94,3 +94,25 @@ function initTheme() {
 initHeader();
 initFooter();
 initTheme();
+
+// Rebuild the header when client navigation changes the pathname. Theme setup
+// recreates its button inside the header and retains the selected theme.
+addEventListener('cp:navigation', () => { initHeader(); initTheme(); });
+
+// Public archive/view navigation is an enhancement; other pages keep their
+// ordinary links, and links still work if this module cannot be loaded.
+if (location.pathname.replace(/\/+$/, '') === '/pastes' || /^\/CP(?:[0-9A-Za-z]{6,7}|[0-9A-Za-z]{10})\/?$/.test(location.pathname)) {
+	void import('./navigation.js?v=13').catch(error => console.warn('Client navigation unavailable', error));
+}
+
+if (!location.pathname.startsWith('/admin') && !['/login', '/logout', '/client-info'].includes(location.pathname)) {
+	// Install after the initial load, so precaching does not compete with page assets.
+	const install = () => {
+		void import('./offline.js?v=2').then(({ registerOfflineShell }) => registerOfflineShell())
+			.catch(error => console.warn('Offline shell unavailable', error));
+	};
+	const idleInstall = () => 'requestIdleCallback' in window
+		? requestIdleCallback(install, { timeout: 3000 }) : install();
+	if (document.readyState === 'complete') idleInstall();
+	else addEventListener('load', idleInstall, { once: true });
+}

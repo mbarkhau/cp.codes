@@ -19,7 +19,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: comp
 	serviceBindings: { ASSETS: async request => {
 		const path = new URL(request.url).pathname.slice(1);
 		if (!/^[a-z_]+\.(js|css)$/.test(path) && !vendorAssets.has(path)) return new Response('', { status: 404 });
-		try { return new Response(await readFile(join(process.cwd(), 'public', path)), { headers: { 'content-type': path.endsWith('.js') ? 'application/javascript' : 'text/css' } }); }
+		try { return new Response(await readFile(join(process.cwd(), 'public', decodeURIComponent(path))), { headers: { 'content-type': path.endsWith('.js') ? 'application/javascript' : 'text/css' } }); }
 		catch { return new Response('', { status: 404 }); }
 	} },
 	outboundService: async () => new Response(JSON.stringify({ model: MODEL, answers: { category: { type: 'choice', choice: 'code',
@@ -99,8 +99,10 @@ async function checkThemeHierarchy(page, selector, screenshots = false) {
 				const style = getComputedStyle(element);
 				return { bg: style.backgroundColor, fg: style.color, shadow: style.boxShadow };
 			};
+			const cardStyle = read(card);
+			if (cardStyle.shadow === 'none' && primary.closest('#paste-content')) cardStyle.shadow = read(primary.closest('#paste-content')).shadow;
 			return {
-				primary: read(primary), card: read(card), page: read(document.body),
+				primary: read(primary), card: cardStyle, page: read(document.body),
 				control: read(document.querySelector('.editor-filename, .icon-action')),
 				meta: read(document.querySelector('.meta')),
 				tokens: [...primary.querySelectorAll('.cm-line span, .hljs span')].map(element => getComputedStyle(element).color),
@@ -128,7 +130,7 @@ async function checkEditorTheme(context, origin, errors) {
 	page.on('pageerror', error => errors.push(error.message));
 	let releaseCodeMirror;
 	const ready = new Promise(resolve => { releaseCodeMirror = resolve; });
-	await page.route('**/lib/codemirror/@codemirror/view@*/dist/index.js', async route => {
+	await page.route(url => url.pathname === editorManifest.imports['@codemirror/view'], async route => {
 		await ready;
 		await route.continue();
 	});
@@ -181,7 +183,7 @@ async function checkEditorFocus(context, origin, errors) {
 		page.on('pageerror', error => errors.push(error.message));
 		let releaseCodeMirror;
 		const ready = new Promise(resolve => { releaseCodeMirror = resolve; });
-		await page.route('**/lib/codemirror/@codemirror/view@*/dist/index.js', async route => {
+		await page.route(url => url.pathname === editorManifest.imports['@codemirror/view'], async route => {
 			await ready;
 			await route.continue();
 		});
@@ -476,7 +478,8 @@ try {
 	await viewer.locator('#consent').check(); await viewer.locator('#consent-moderation').check(); await viewer.locator('#publish').click();
 	await viewer.waitForURL(url => /^\/CP[A-Z0-9]+$/.test(url.pathname));
 	await viewer.waitForFunction(() => document.querySelector('#paste-content h1')?.textContent === 'A harmless text-only paste');
-	assert.equal(await viewer.locator('.sharing-banner, #selected-file-info, #paste-file-nav').count(), 0);
+	assert.equal(await viewer.locator('.sharing-banner, #selected-file-info').count(), 0);
+	assert.equal(await viewer.locator('#paste-file-nav [role="tab"]').count(), 1);
 	await viewer.setViewportSize({ width: 390, height: 844 });
 	const mobileActionsBefore = await viewer.locator('.paste-actions').boundingBox();
 	const mobileContentBefore = await viewer.locator('.paste-card').boundingBox();

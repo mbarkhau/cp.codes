@@ -25,6 +25,10 @@ CONTENT_TYPES = (
     "plaintext", "url", "markdown", "png", "jpeg", "webp", "gif", "mp3", "mp4", "javascript", "typescript",
     "python", "java", "json", "html", "css", "shell", "sql", "yaml", "xml",
     "c", "cpp", "csharp", "go", "rust", "ruby", "php",
+    "toml", "makefile", "kotlin", "swift", "dart", "scala", "lua", "perl", "r", "julia",
+    "powershell", "dockerfile", "cmake", "ini", "diff",
+    "jsonc", "json5", "csv", "tsv", "scss", "sass", "less", "elixir", "erlang", "haskell",
+    "clojure", "fsharp", "objectivec", "groovy", "matlab", "octave",
 )
 
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
+import { highlightDelimited } from '../public/delimited.js';
 
 const source = await readFile(new URL("../public/highlight.js", import.meta.url), "utf8");
 
@@ -29,6 +30,7 @@ function harness({ failImport = false, failHighlight = false, missingGrammar = f
 		},
 	};
 	const context = vm.createContext({
+		highlightDelimited,
 		document: {
 			getElementById(id) { return styles.find((style) => style.id === id); },
 			createElement() { return {}; },
@@ -42,7 +44,7 @@ function harness({ failImport = false, failHighlight = false, missingGrammar = f
 		},
 	});
 	// Substitute only the network import boundary, executing the real client logic.
-	vm.runInContext(source.replace("export async function", "async function").replaceAll("import(", "loadModule("), context);
+	vm.runInContext(source.replace(/^import .*;\r?\n/gm, '').replace("export async function", "async function").replaceAll("import(", "loadModule("), context);
 	return {
 		imports, styles, calls, warnings,
 		highlight: (blocks) => context.highlightPaste({ querySelectorAll: () => blocks }),
@@ -84,11 +86,39 @@ test("maps paste content types and Markdown fence aliases to grammar names", asy
 	const aliases = {
 		html: "xml", shell: "bash", sh: "bash", yml: "yaml", cs: "csharp",
 		"c++": "cpp", "c#": "csharp", TS: "typescript", py: "python", rb: "ruby",
+		toml: "ini", ini: "ini", make: "makefile", mk: "makefile", mak: "makefile",
+		kt: "kotlin", kts: "kotlin", ps1: "powershell", ps: "powershell", docker: "dockerfile", patch: "diff",
+		svg: 'xml', jsonc: 'json', json5: 'json5', sass: 'scss', ex: 'elixir', exs: 'elixir', erl: 'erlang',
+		hs: 'haskell', clj: 'clojure', 'f#': 'fsharp', fs: 'fsharp', objc: 'objectivec', 'objective-c': 'objectivec', octave: 'matlab',
 	};
 	for (const [alias, language] of Object.entries(aliases)) {
 		await h.highlight([codeBlock(alias)]);
 		assert.equal(h.calls.at(-1).language, language);
 	}
+});
+
+test("all added language types request the correct viewer grammar", async () => {
+	const fixtures = JSON.parse(await readFile(new URL('./fixtures/languages.json', import.meta.url), 'utf8'));
+	const h = harness();
+	for (const { type, content } of fixtures) {
+		if (type === 'csv' || type === 'tsv') continue;
+		await h.highlight([codeBlock(type, content)]);
+		assert.equal(h.calls.at(-1).language, ({ toml: 'ini', shell: 'bash', jsonc: 'json', sass: 'scss', octave: 'matlab' })[type] ?? type);
+	}
+});
+
+test('CSV and TSV highlight safely with no network dependency', async () => {
+	const h = harness({ failImport: true });
+	for (const type of ['csv', 'tsv']) {
+		const content = ['name', '<script>alert(1)</script>', '"quoted\nvalue"'].join(type === 'tsv' ? '\t' : ',');
+		const block = codeBlock(type, content);
+		await h.highlight([block]);
+		assert.equal(block.innerHTML, highlightDelimited(content, type === 'tsv' ? '\t' : ','));
+		assert.equal(block.textContent, content);
+		assert.ok(block.classList.has('hljs'));
+		assert.ok(!block.innerHTML.includes('<script>'));
+	}
+	assert.deepEqual(h.imports, []);
 });
 
 test("passes source as text to the highlighter and preserves it for copying", async () => {
@@ -117,7 +147,7 @@ test("paste viewer starts enhancement only after rendering and enabling copy", a
 	const viewer = await readFile(new URL("../public/view.js", import.meta.url), "utf8");
 	const displayIndex = viewer.indexOf("host.replaceChildren(rendered)");
 	const copyIndex = viewer.indexOf("copyButton.disabled = false", displayIndex);
-	const highlightIndex = viewer.indexOf('void import("./highlight.js?v=2")', displayIndex);
+	const highlightIndex = viewer.indexOf('void import("./highlight.js?v=4")', displayIndex);
 	assert.ok(displayIndex >= 0 && displayIndex < copyIndex && copyIndex < highlightIndex);
 	assert.match(viewer, /highlightPaste\(rendered\)/);
 });

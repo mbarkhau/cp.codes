@@ -3,6 +3,8 @@
  * Client PoW logic lives in /app.js (static asset).
  */
 
+import { recentSection, pasteBody, pasteSkeleton } from "../public/pages.js";
+
 import type { PasteUploadMetadata, PublicPastePage, RecentPaste, StoredPaste } from "./paste";
 import {
 	DEFAULT_PASTE_BYTES,
@@ -30,6 +32,7 @@ export type LayoutOptions = {
 	extraStylesheet?: string;
 	showFooter?: boolean;
 	resourceHints?: string;
+	appShell?: boolean;
 };
 
 export function layout(
@@ -60,7 +63,7 @@ export function layout(
 <body>
 	<div class="wrap${options.wide ? " wide" : ""}">
 	<header></header>
-	${body}
+	<main id="page-content" tabindex="-1"${options.appShell ? ' data-app-shell' : ''}>${body}</main>
 	${footer}
   </div>
   <script src="${assetUrl('/site.js')}"></script>
@@ -69,61 +72,7 @@ export function layout(
 </html>`;
 }
 
-function formatWhen(iso: string): string {
-	const t = Date.parse(iso);
-	if (!Number.isFinite(t)) return escapeHtml(iso);
-	return escapeHtml(new Date(t).toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z"));
-}
-
-function formatHitCount(hitCount: number): string {
-	const count = Number.isSafeInteger(hitCount) && hitCount >= 0 ? hitCount : 0;
-	return `${count.toLocaleString("en-US")} ${count === 1 ? "hit" : "hits"}`;
-}
-
-function recentSection(recent: RecentPaste[], standalone = false, listing?: PublicPastePage): string {
-	const items =
-		recent.length === 0
-			? `<p class="recent-empty">No public pastes yet.</p>`
-			: `<div class="recent-table-scroll"><table class="recent-list">
-  <thead><tr><th scope="col">id</th><th scope="col">filename</th><th scope="col" class="recent-hits">hits</th><th scope="col" class="recent-bytes">bytes</th><th scope="col">timestamp</th></tr></thead>
-  <tbody>
-${recent
-	.map(
-		(p) => `  <tr>
-	<td><a class="recent-id" href="/${escapeHtml(p.id)}">${escapeHtml(p.id)}</a></td>
-	<td class="recent-filename" title="${escapeHtml(p.primary ?? p.filename ?? '')}">${escapeHtml(p.primary ?? p.filename ?? '—')}</td>
-	<td class="recent-hits">${Number.isSafeInteger(p.hit_count) && p.hit_count >= 0 ? p.hit_count.toLocaleString("en-US") : '0'}</td>
-	<td class="recent-bytes">${p.byte_length.toLocaleString("en-US")}</td>
-	<td class="recent-meta">${formatWhen(p.created_at)}</td>
-  </tr>`,
-	)
-	.join("\n")}
-  </tbody>
-</table></div>`;
-
-	return `
-<section class="recent card${standalone ? " recent-page" : ""}" id="pastes">
-  <h2>${standalone ? 'Public pastes' : 'Recent uploads'}</h2>
-  ${listing ? publicPasteNavigation(listing) : ''}
-  ${items}
-  ${listing ? publicPasteNavigation(listing) : ''}
-</section>`;
-}
-
 type SitePage = "about" | "pastes" | "new";
-
-function publicPasteNavigation(listing: PublicPastePage): string {
-	if (!listing.total) return '';
-	const previous = listing.page > 1
-		? `<a href="/pastes?page=${listing.page - 1}" rel="prev">← Previous</a>`
-		: '<span aria-disabled="true">← Previous</span>';
-	const next = listing.page < listing.total_pages
-		? `<a href="/pastes?page=${listing.page + 1}" rel="next">Next →</a>`
-		: '<span aria-disabled="true">Next →</span>';
-	const first = (listing.page - 1) * listing.page_size + 1;
-	const last = first + listing.items.length - 1;
-	return `<nav class="paste-pagination" aria-label="Paste pages">${previous}<span class="meta">Page ${listing.page} of ${listing.total_pages} · ${first}–${last} of ${listing.total} pastes</span>${next}</nav>`;
-}
 
 function sitePage(page: SitePage, recent: RecentPaste[] = [], listing?: PublicPastePage): Response {
 	const d = POW_DEFAULTS.difficultyBits;
@@ -207,12 +156,27 @@ export function aboutPage(): Response {
 	return sitePage("about");
 }
 
+export function aboutShellPage(): Response {
+	return cacheableShell(aboutPage());
+}
+
 export function pastesPage(listing: PublicPastePage): Response {
 	return sitePage("pastes", listing.items, listing);
 }
 
 export function newPage(): Response {
 	return sitePage("new");
+}
+
+/** Static composer markup; staff display hints are resolved by site.js locally. */
+export function newShellPage(): Response {
+	return cacheableShell(newPage());
+}
+
+function cacheableShell(response: Response): Response {
+	response.headers.set('cache-control', 'public, max-age=0, must-revalidate');
+	response.headers.delete('vary');
+	return response;
 }
 
 export function clientInfoPage(metadata: PasteUploadMetadata): Response {
@@ -241,42 +205,14 @@ ${rows}
 
 const VIEW_MODULE_URL = assetUrl('/view.js');
 
-export function viewPage(paste: StoredPaste, hitCount: number, staffReview = false): Response {
-	const id = escapeHtml(paste.id);
-	const typeLabel = CONTENT_TYPE_LABELS[paste.content_type];
-	const rawUrl = staffReview ? `/admin/paste/${id}/raw` : `/${id}.${fileExtension(paste.content_type)}`;
-	const contentUrl = staffReview ? `/admin/paste/${id}/content` : `/api/paste/${id}/content`;
-	const dialogMetadata = escapeHtml(JSON.stringify({
-		created_at: paste.created_at,
-		compressed_byte_length: paste.compressed_byte_length,
-		content_encoding: paste.content_encoding,
-		filename: paste.filename,
-		unlisted: paste.unlisted,
-		files: paste.files,
-		proof_of_work: paste.proof_of_work,
-		report_categories: REPORT_CATEGORIES,
-		max_report_email_chars: MAX_REPORT_EMAIL_CHARS,
-	}));
-	// Discover content early, but let the site module and CSS win bandwidth for the shell's first paint.
-	// Keep these after the site module and CSS, within the first KiB.
-	// Anonymous CORS matches fetch()'s default mode and same-origin credentials.
+export function viewPage(paste: StoredPaste, hitCount: number, staffReview = false, offlineCacheable = false): Response {
+	const contentUrl = staffReview ? `/admin/paste/${paste.id}/content` : `/api/paste/${paste.id}/content`;
 	const resourceHints = `<link rel="preload" href="${contentUrl}" as="fetch" crossorigin="anonymous" />`;
-	const filename = paste.filename ? ` · <strong>${escapeHtml(paste.filename)}</strong>` : "";
-	const visibility = paste.unlisted ? " · unlisted" : "";
-	const body = `
-<div class="paste-main">
-  <section class="paste-head">
-    ${staffReview ? `<p class="status">Staff review — content remains subject to its current visibility. <a href="/admin/pastes">← moderation</a></p><div class="row"><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="approve"/><button type="submit">Approve public access</button></form><form method="post" action="/admin/paste/${id}"><input type="hidden" name="action" value="classify"/><select name="reason" aria-label="Restriction reason" required><option value="">Restriction reason…</option>${REPORT_CATEGORIES.map(reason => `<option>${escapeHtml(reason)}</option>`).join('')}</select> <button class="danger" type="submit">Restrict &amp; hide</button></form></div>` : ""}
-    <div class="meta">${formatWhen(paste.created_at)} · ${paste.byte_length} bytes · <span id="paste-hit-count">${formatHitCount(hitCount)}</span> · <span class="type-badge">${escapeHtml(typeLabel)}</span>${filename}${visibility}</div>
-    <div class="paste-toolbar"></div>
-  </section>
-  <section class="card paste-card" style="padding:0; overflow:hidden;">
-    ${paste.format && (paste.files?.length ?? 0) > 1 ? `<nav class="paste-file-nav" id="paste-file-nav" role="tablist" aria-label="Paste files" hidden></nav>` : ''}
-    <div id="paste-content" data-cp-code="${id}" data-content-url="${contentUrl}" data-raw-url="${rawUrl}" data-staff-review="${staffReview}" data-format="${paste.format ?? 'single'}" data-primary="${escapeHtml(paste.primary ?? '')}" data-content-type="${escapeHtml(paste.content_type)}" data-byte-length="${paste.byte_length}" data-sha256="${escapeHtml(paste.sha256)}" data-dialog-metadata="${dialogMetadata}" aria-busy="true">
-      <p class="paste-loading" role="status">Loading and decompressing paste…</p>
-    </div>
-  </section>
-</div>`;
+	const body = pasteBody(paste, hitCount, {
+		typeLabel: CONTENT_TYPE_LABELS[paste.content_type],
+		rawUrl: staffReview ? `/admin/paste/${paste.id}/raw` : `/${paste.id}.${fileExtension(paste.content_type)}`,
+		contentUrl, staffReview, offlineCacheable, reportCategories: REPORT_CATEGORIES, maxReportEmailChars: MAX_REPORT_EMAIL_CHARS,
+	});
 	const html = layout(
 		`cp.codes/${paste.id}`,
 		body,
@@ -289,6 +225,14 @@ export function viewPage(paste: StoredPaste, hitCount: number, staffReview = fal
 			"cache-control": "no-store, private",
 			vary: "Cookie, Authorization",
 		},
+	});
+}
+
+/** Generic, non-personalized shell used by the service worker for public routes. */
+export function appShellPage(): Response {
+	return new Response(layout('cp.codes', pasteSkeleton(),
+		`<script type="module" src="${assetUrl('/navigation.js')}"></script>`, { appShell: true }), {
+		headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=0, must-revalidate' },
 	});
 }
 
